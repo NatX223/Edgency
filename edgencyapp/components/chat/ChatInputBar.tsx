@@ -1,28 +1,78 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import {
   View,
   Text,
+  Easing,
   TextInput,
   TouchableOpacity,
   StyleSheet,
   Animated,
-  Alert,
+  Vibration,
   Keyboard,
   Platform,
 } from 'react-native';
 import { Colors, Typography, Spacing, Radii } from '@/constants/tokens';
+import type { AudioRecorderState } from '@/hooks/useAudioRecorder';
 
 interface ChatInputBarProps {
   onSend: (text: string) => void;
-  onCamera?: () => void;
-  onVideo?: () => void;
-  onCancelSOS?: () => void;
+  onCameraPress?: () => void;
+  onVideoPress?: () => void;
+  onMicPressIn?: () => void;
+  onMicPressOut?: () => void;
+  // onCancelSOS?: () => void;
+  disabled?: boolean;
+  /** Passed from useAudioRecorder so the bar can show recording state */
+  recorderState?: AudioRecorderState;
 }
 
-export function ChatInputBar({ onSend, onCamera, onVideo, onCancelSOS }: ChatInputBarProps) {
+function formatDuration(ms: number): string {
+  const totalSecs = Math.floor(ms / 1000);
+  const mins = Math.floor(totalSecs / 60);
+  const secs = totalSecs % 60;
+  return `${mins}:${String(secs).padStart(2, '0')}`;
+}
+
+// Animated recording indicator dot
+function RecordingDot() {
+  const opacity = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(opacity, { toValue: 0.2, duration: 500, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
+        Animated.timing(opacity, { toValue: 1,   duration: 500, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
+      ])
+    ).start();
+  }, []);
+  return <Animated.View style={[rd.dot, { opacity }]} />;
+}
+const rd = StyleSheet.create({
+  dot: { width: 8, height: 8, borderRadius: 4, backgroundColor: Colors.error },
+});
+
+
+export function ChatInputBar({ onSend, onCameraPress, onMicPressIn, onMicPressOut, recorderState }: ChatInputBarProps) {
   const [text, setText] = useState('');
   const micScale = useRef(new Animated.Value(1)).current;
+  const micBgAnim = useRef(new Animated.Value(0)).current;
   const [micActive, setMicActive] = useState(false);
+
+  const isRecording = recorderState?.isRecording ?? false;
+  const canSend     = !isRecording && text.trim().length > 0;  
+
+  // Animate mic background when recording
+  useEffect(() => {
+    Animated.timing(micBgAnim, {
+      toValue: isRecording ? 1 : 0,
+      duration: 200,
+      useNativeDriver: false,
+    }).start();
+  }, [isRecording]);
+
+  const micBg = micBgAnim.interpolate({
+    inputRange:  [0, 1],
+    outputRange: [Colors.primaryContainer, Colors.error],
+  });
 
   const handleSend = () => {
     const trimmed = text.trim();
@@ -32,28 +82,41 @@ export function ChatInputBar({ onSend, onCamera, onVideo, onCancelSOS }: ChatInp
     Keyboard.dismiss();
   };
 
-  const onMicPressIn = () => {
-    setMicActive(true);
-    Animated.spring(micScale, { toValue: 1.15, useNativeDriver: true, bounciness: 8 }).start();
+  const handleMicPressIn = () => {
+    if (text.trim()) return;
+    Vibration.vibrate(30);
+    Animated.spring(micScale, { toValue: 1.2, useNativeDriver: true, bounciness: 4 }).start();
+    onMicPressIn?.();
   };
-  const onMicPressOut = () => {
-    setMicActive(false);
+
+  const handleMicPressOut = () => {
     Animated.spring(micScale, { toValue: 1, useNativeDriver: true, bounciness: 6 }).start();
+    onMicPressOut?.();
   };
 
   return (
     <View style={styles.container}>
+      {isRecording && (
+        <View style={styles.recordingBar}>
+          <RecordingDot />
+          <Text style={styles.recordingText}>
+            Recording… {formatDuration(recorderState?.durationMs ?? 0)}
+          </Text>
+          <Text style={styles.recordingHint}>Release to send</Text>
+        </View>
+      )}
       {/* Input row */}
-      <View style={styles.inputRow}>
+      <View style={[styles.inputRow, isRecording && styles.inputRowRecording]}>
         {/* Camera */}
-        <TouchableOpacity style={styles.iconBtn} onPress={onCamera} activeOpacity={0.7} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-          <Text style={styles.inputIcon}>📷</Text>
+        <TouchableOpacity
+          style={styles.iconBtn}
+          onPress={onCameraPress}
+          activeOpacity={0.7}
+          disabled={isRecording}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        >
+          <Text style={[styles.inputIcon, (isRecording) && styles.dimmed]}>📷</Text>
         </TouchableOpacity>
-
-        {/* Video */}
-        {/* <TouchableOpacity style={styles.iconBtn} onPress={onVideo} activeOpacity={0.7} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-          <Text style={styles.inputIcon}>🎥</Text>
-        </TouchableOpacity> */}
 
         {/* Text input */}
         <TextInput
@@ -70,15 +133,23 @@ export function ChatInputBar({ onSend, onCamera, onVideo, onCancelSOS }: ChatInp
 
         {/* Mic / send */}
         <Animated.View style={{ transform: [{ scale: micScale }] }}>
-          <TouchableOpacity
-            style={[styles.micBtn, micActive && styles.micBtnActive]}
-            onPressIn={onMicPressIn}
-            onPressOut={onMicPressOut}
-            onPress={text.trim() ? handleSend : undefined}
-            activeOpacity={0.85}
-          >
-            <Text style={styles.micIcon}>{text.trim() ? '↑' : '🎙'}</Text>
-          </TouchableOpacity>
+          {/* Send arrow — shown when there's text */}
+          {canSend ? (
+            <TouchableOpacity style={styles.micBtn} onPress={handleSend} activeOpacity={0.85}>
+              <Text style={styles.micIcon}>↑</Text>
+            </TouchableOpacity>
+          ) : (
+            /* Mic — press and hold */
+            <TouchableOpacity
+              onPressIn={handleMicPressIn}
+              onPressOut={handleMicPressOut}
+              activeOpacity={1}
+            >
+              <Animated.View style={[styles.micBtn, { backgroundColor: micBg }]}>
+                <Text style={styles.micIcon}>{isRecording ? '⏹' : '🎙'}</Text>
+              </Animated.View>
+            </TouchableOpacity>
+          )}
         </Animated.View>
       </View>
 
@@ -102,6 +173,17 @@ const styles = StyleSheet.create({
     shadowRadius: 12,
     elevation: 16,
   },
+
+  recordingBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    paddingVertical: Spacing.xs,
+    paddingHorizontal: Spacing.sm,
+  },
+  recordingText: { ...Typography.labelMd, color: Colors.error, flex: 1 },
+  recordingHint: { ...Typography.labelSm, color: Colors.onSurfaceVariant },
+
   inputRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -114,8 +196,13 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(166,139,132,0.2)',
     gap: 4,
   },
+
+  inputRowRecording:  { borderColor: 'rgba(255,180,171,0.4)', backgroundColor: 'rgba(147,0,10,0.08)' },
+
   iconBtn:    { padding: 8 },
   inputIcon:  { fontSize: 18 },
+  dimmed:     { opacity: 0.35 },
+
   input: {
     flex: 1,
     ...Typography.bodyMd,
@@ -124,6 +211,7 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     maxHeight: 80,
   },
+
   micBtn: {
     width: 40, height: 40, borderRadius: 20,
     backgroundColor: Colors.primaryContainer,
@@ -134,6 +222,7 @@ const styles = StyleSheet.create({
     shadowRadius: 10,
     elevation: 8,
   },
+
   micBtnActive: {
     backgroundColor: Colors.primary,
     shadowOpacity: 0.7,

@@ -23,6 +23,10 @@ import {
 import { IncidentContextBanner } from '@/components/chat/IncidentContextBanner';
 import type { IncidentType } from '@/components/home/IncidentCard';
 
+import { useAudioRecorder } from '@/hooks/useAudioRecorder';
+import { useMediaPermissions } from '@/hooks/useMediaPermissions';
+import * as ImagePicker from 'expo-image-picker';
+
 import {
   completion,
   downloadAsset,
@@ -73,6 +77,11 @@ export default function ChatScreen() {
   const [messages, setMessages] = useState<Message[]>(SEED_MESSAGES);
   const [isTyping, setIsTyping] = useState(false);
   const listRef = useRef<FlatList>(null);
+
+  // ── Hooks ──────────────────────────────────────────────────────────────────
+  const { requestCamera, requestLibrary, requestMicrophone }  = useMediaPermissions();
+  const { state: recorderState, startRecording, stopRecording } = useAudioRecorder();
+
 
   // ── QVAC model state ──────────────────────────────────────────────────────
   const [modelId, setModelId] = useState<string | null>(null);
@@ -166,23 +175,19 @@ export default function ChatScreen() {
     setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
   }, []);
 
-  // ── Send handler — real QVAC completion ───────────────────────────────────
-  const handleSend = useCallback(
-    async (text: string) => {
-      // 1. Append user bubble to the UI immediately
-      const userUiMsg: Message = {
-        id: makeId(),
-        sender: 'user',
-        text,
-      };
-      setMessages((prev) => [...prev, userUiMsg]);
+  const appendUserMessage = useCallback(
+    async (msg: Message, aiContext?: string) => {
+      setMessages((prev) => [...prev, msg]);
       scrollToBottom();
+
+      // Only trigger AI for text messages (media = no AI reply yet)
+      if (!aiContext) return;
 
       // 2. Build the new history entry for QVAC
       const userHistoryMsg: ChatMessage = {
-        id: userUiMsg.id,
+        id: msg.id,
         role: 'user',
-        content: text,
+        content: msg.text!,
       };
       const nextHistory = [...historyRef.current, userHistoryMsg];
       setHistory(nextHistory);
@@ -281,29 +286,108 @@ export default function ChatScreen() {
         );
         scrollToBottom();
       }
+
     },
     [scrollToBottom, modelStatus]
   );
 
-  // ── Camera / cancel handlers (unchanged) ─────────────────────────────────
-  const handleCamera = useCallback(() => {
-    Alert.alert('Camera', 'Camera/photo picker would open here.');
-  }, []);
+  // ── Send handler — QVAC model Inferencing ───────────────────────────────────
 
-  const handleCancelSOS = useCallback(() => {
-    Alert.alert(
-      'Cancel SOS?',
-      'This will notify emergency services that the situation has been resolved.',
-      [
-        { text: 'Keep SOS Active', style: 'cancel' },
-        {
-          text: 'Cancel SOS',
-          style: 'destructive',
-          onPress: () => router.replace('/(tabs)'),
-        },
-      ]
-    );
-  }, []);
+  const handleSend = useCallback(
+    (text: string) => {
+      const msg: Message = { id: makeId(), sender: 'user', text };
+      appendUserMessage(msg, text);
+    },
+    [appendUserMessage]
+  );
+
+  // ── Camera / cancel handlers (unchanged) ─────────────────────────────────
+  const handleCameraPress = useCallback(async () => {
+    const ok = await requestCamera();
+    if (!ok) return;
+
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.8,
+      allowsEditing: false,
+    });
+
+    if (result.canceled || !result.assets[0]) return;
+
+    const asset = result.assets[0];
+    const msg: Message = {
+      id:           makeId(),
+      sender:       'user',
+      imageUri:     asset.uri,
+      imageCaption: 'Photo from camera',
+    };
+    // TODO: pass image to vision model here
+    appendUserMessage(msg);
+  }, [requestCamera, appendUserMessage]);
+
+  // ── Video ──────────────────────────────────────────────────────────────────
+  // const handleVideoPress = useCallback(async () => {
+  //   const ok = await requestCamera();
+  //   if (!ok) return;
+
+  //   const result = await ImagePicker.launchCameraAsync({
+  //     mediaTypes: ImagePicker.MediaTypeOptions.Videos,
+  //     videoMaxDuration: 60,
+  //     quality: ImagePicker.UIImagePickerControllerQualityType.Medium,
+  //     allowsEditing: false,
+  //   });
+
+  //   if (result.canceled || !result.assets[0]) return;
+
+  //   const asset = result.assets[0];
+  //   const msg: Message = {
+  //     id:             makeId(),
+  //     sender:         'user',
+  //     videoUri:       asset.uri,
+  //     videoDurationMs: asset.duration ? asset.duration * 1000 : undefined,
+  //   };
+  //   // TODO: pass video to vision model here
+  //   appendUserMessage(msg);
+  // }, [requestCamera, appendUserMessage]);
+
+  // ── Mic press-and-hold ─────────────────────────────────────────────────────
+  const handleMicPressIn = useCallback(async () => {
+    const ok = await requestMicrophone();
+    if (!ok) return;
+    await startRecording();
+  }, [requestMicrophone, startRecording]);
+
+  const handleMicPressOut = useCallback(async () => {
+    const result = await stopRecording();
+    if (!result) return;
+
+    // Ignore recordings under 0.5 s (accidental taps)
+    if (result.durationMs < 500) return;
+
+    const msg: Message = {
+      id:             makeId(),
+      sender:         'user',
+      audioUri:       result.uri,
+      audioDurationMs: result.durationMs,
+    };
+    // TODO: pass audio to transcription model here, then send text to AI
+    appendUserMessage(msg);
+  }, [stopRecording, appendUserMessage]);
+
+  // const handleCancelSOS = useCallback(() => {
+  //   Alert.alert(
+  //     'Cancel SOS?',
+  //     'This will notify emergency services that the situation has been resolved.',
+  //     [
+  //       { text: 'Keep SOS Active', style: 'cancel' },
+  //       {
+  //         text: 'Cancel SOS',
+  //         style: 'destructive',
+  //         onPress: () => router.replace('/(tabs)'),
+  //       },
+  //     ]
+  //   );
+  // }, []);
 
   // ── Render helpers ────────────────────────────────────────────────────────
   const renderItem = useCallback(
@@ -383,9 +467,12 @@ export default function ChatScreen() {
 
           <ChatInputBar
             onSend={handleSend}
-            onCamera={handleCamera}
-            onVideo={() => Alert.alert('Video', 'Video recorder coming soon.')}
-            onCancelSOS={handleCancelSOS}
+            onCameraPress={handleCameraPress}
+            // onVideoPress={handleVideoPress}
+            onMicPressIn={handleMicPressIn}
+            onMicPressOut={handleMicPressOut}
+            // onCancelSOS={handleCancelSOS}
+            recorderState={recorderState}
           />
         </KeyboardAvoidingView>
       </SafeAreaView>

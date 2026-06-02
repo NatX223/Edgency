@@ -16,6 +16,8 @@ export interface Message {
   sender: MessageSender;
   text?: string;
   imageUri?: string;
+  audioUri?: string;
+  audioDurationMs?: number;
   imageCaption?: string;
   timestamp?: string;
 }
