@@ -3,7 +3,7 @@ import { View, Text, TouchableOpacity, StyleSheet, Animated } from 'react-native
 import { router } from 'expo-router';
 import { Colors, Typography, Spacing, Radii } from '@/constants/tokens';
 
-export type IncidentType = 'earth' | 'fire' | 'flood' | 'storm';
+export type IncidentType = 'earth' | 'medical' | 'flood' | 'storm';
 
 interface IncidentCardProps {
   title: string;
@@ -14,8 +14,8 @@ interface IncidentCardProps {
 }
 
 const TYPE_CONFIG: Record<IncidentType, { emoji: string; bg: string }> = {
+  medical: { emoji: '🏥', bg: 'rgba(255,180,163,0.15)' },
   earth:   { emoji: '⛰️', bg: 'rgba(25,180,163,0.15)' },
-  fire:    { emoji: '🧯', bg: 'rgba(255,180,163,0.15)' },
   flood:   { emoji: '🌊', bg: 'rgba(193,200,202,0.15)' },
   storm:   { emoji: '🌪️', bg: 'rgba(197,192,255,0.15)' },
 };

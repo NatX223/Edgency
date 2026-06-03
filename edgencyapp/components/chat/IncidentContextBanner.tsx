@@ -18,40 +18,38 @@ const TYPE_CONFIG: Record<IncidentType, {
   borderColor: string;
 }> = {
   earth: {
-    emoji: '🏥',
-    label: 'Medical Emergency',
+    emoji: '⛰️',
+    label: 'Earth Quakes',
     accentColor: Colors.error,
-    accentBg: 'rgba(255,180,171,0.12)',
-    borderColor: 'rgba(255,180,171,0.28)',
+    accentBg: 'rgba(25,180,163,0.15)',
+    borderColor: 'rgba(25,180,163,0.15)',
   },
-  fire: {
-    emoji: '🧯',
-    label: 'Fire Incident',
+  medical: {
+    emoji: '🏥',
+    label: 'Medical Emergencies',
     accentColor: Colors.tertiary,
-    accentBg: 'rgba(197,192,255,0.12)',
-    borderColor: 'rgba(197,192,255,0.28)',
+    accentBg: 'rgba(255,180,163,0.15)',
+    borderColor: 'rgba(255,180,163,0.15)',
   },
   flood: {
-    emoji: '🚔',
-    label: 'Police Response',
+    emoji: '🌊',
+    label: 'Floods',
     accentColor: Colors.secondary,
-    accentBg: 'rgba(193,200,202,0.12)',
-    borderColor: 'rgba(193,200,202,0.28)',
+    accentBg: 'rgba(193,200,202,0.15)',
+    borderColor: 'rgba(193,200,202,0.15)',
   },
   storm: {
-    emoji: '⚠️',
-    label: 'Incident',
+    emoji: '🌪️',
+    label: 'Storms',
     accentColor: Colors.primary,
-    accentBg: 'rgba(255,180,163,0.12)',
-    borderColor: 'rgba(255,180,163,0.28)',
+    accentBg: 'rgba(197,192,255,0.15)',
+    borderColor: 'rgba(197,192,255,0.15)',
   },
 };
 
 export function IncidentContextBanner({
   type,
-  title,
-  distance,
-  address,
+  title
 }: IncidentContextBannerProps) {
   const cfg = TYPE_CONFIG[type] ?? TYPE_CONFIG.earth;
 
@@ -93,18 +91,7 @@ export function IncidentContextBanner({
 
       {/* Centre: incident info */}
       <View style={styles.info}>
-        <View style={styles.titleRow}>
-          <Text style={[styles.typeLabel, { color: cfg.accentColor }]}>
-            {cfg.label}
-          </Text>
-          <View style={[styles.typePill, { backgroundColor: cfg.accentBg, borderColor: cfg.borderColor }]}>
-            <Text style={[styles.typeTag, { color: cfg.accentColor }]}>
-              {type.toUpperCase()}
-            </Text>
-          </View>
-        </View>
         <Text style={styles.title}>{title}</Text>
-        <Text style={styles.meta}>{distance} • {address}</Text>
       </View>
     </Animated.View>
   );
@@ -144,6 +131,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 7,
   },
   typeTag:  { ...Typography.labelSm, fontSize: 10 },
-  title:    { ...Typography.labelMd, color: Colors.onSurface, fontSize: 14 },
+  title:    { ...Typography.labelMd, color: Colors.onSurface, fontSize: 18 },
   meta:     { ...Typography.labelSm, color: Colors.onSurfaceVariant },
 });

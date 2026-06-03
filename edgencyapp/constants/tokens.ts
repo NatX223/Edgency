@@ -104,7 +104,7 @@ export const Typography = {
   },
   labelMd: {
     fontFamily: 'Inter_600SemiBold',
-    fontSize: 14,
+    fontSize: 16,
     lineHeight: 20,
     letterSpacing: 0.01 * 14,
   },

@@ -22,6 +22,7 @@ import {
 } from '@/components/chat';
 import { IncidentContextBanner } from '@/components/chat/IncidentContextBanner';
 import type { IncidentType } from '@/components/home/IncidentCard';
+import { useDatabase, type UserRecord } from '@/hooks/useDatabase';
 
 import { useAudioRecorder } from '@/hooks/useAudioRecorder';
 import { useMediaPermissions } from '@/hooks/useMediaPermissions';
@@ -54,12 +55,64 @@ const SEED_MESSAGES: Message[] = [
   }
 ];
 
-// ─── System prompt for the emergency AI persona ───────────────────────────────
-const SYSTEM_PROMPT =
-  'You are an emergency response AI assistant named Edgent. ' +
-  'The user is in an emergency situation. Be calm, clear, and supportive. ' +
-  'Give short, actionable guidance. Never panic or alarm the user further.'
-  ;
+// ─── System prompt builder ────────────────────────────────────────────────────
+function buildSystemPrompt(
+  incidentType: IncidentType | null,
+  user: UserRecord | null
+): string {
+  const lines: string[] = [
+    'You are an emergency response AI assistant named Edgent.',
+    'The user is in an emergency situation. Be calm, clear, and supportive.',
+    'Give short, actionable guidance. Never panic or alarm the user further.',
+  ];
+
+  if (incidentType) {
+    lines.push(`\nCURRENT EMERGENCY TYPE: ${incidentType.toUpperCase()}.`);
+    lines.push(
+      'Tailor every piece of advice specifically to this emergency type. ' +
+      'Prioritise guidance relevant to this incident above all else.'
+    );
+  }
+
+  if (user) {
+    lines.push('\nUSER PROFILE:');
+    lines.push(`- Name: ${user.full_name}`);
+    lines.push(`- Sector / Location context: ${user.sector}`);
+    lines.push(`- Role: ${user.role}`);
+
+    if (user.experience_level) {
+      lines.push(`- Experience level: ${user.experience_level}`);
+      if (user.experience_level === 'rookie') {
+        lines.push(
+          '  (Use simple language and step-by-step instructions for this user.)'
+        );
+      } else if (user.experience_level === 'veteran') {
+        lines.push(
+          '  (This user has significant experience — be concise and use professional terminology.)'
+        );
+      }
+    }
+
+    if (user.medical_history?.trim()) {
+      lines.push(`- Medical history: ${user.medical_history}`);
+    }
+
+    if (user.health_conditions?.trim()) {
+      lines.push(`- Health conditions: ${user.health_conditions}`);
+    }
+
+    if (user.disabilities?.trim()) {
+      lines.push(`- Disabilities / accessibility needs: ${user.disabilities}`);
+    }
+
+    lines.push(
+      "\nFactor the user's profile into every response. " +
+      'Account for any health conditions or disabilities that may affect what actions are safe or possible for them.'
+    );
+  }
+
+  return lines.join('\n');
+}
 
 // Map UI Message[] seeds → QVAC history so the model has full context
 function seedToHistory(seeds: Message[]): ChatMessage[] {
@@ -81,6 +134,24 @@ export default function ChatScreen() {
   // ── Hooks ──────────────────────────────────────────────────────────────────
   const { requestCamera, requestLibrary, requestMicrophone }  = useMediaPermissions();
   const { state: recorderState, startRecording, stopRecording } = useAudioRecorder();
+
+  // ── Database / user profile ───────────────────────────────────────────────
+  const { isReady: dbReady, getUser } = useDatabase();
+  const [userRecord, setUserRecord] = useState<UserRecord | null>(null);
+  const userRecordRef = useRef<UserRecord | null>(null);
+
+  useEffect(() => {
+    if (!dbReady) return;
+    (async () => {
+      try {
+        const u = await getUser();
+        userRecordRef.current = u;
+        setUserRecord(u);
+      } catch (e) {
+        console.warn('[DB] Failed to load user profile:', e);
+      }
+    })();
+  }, [dbReady]);
 
 
   // ── QVAC model state ──────────────────────────────────────────────────────
@@ -106,13 +177,13 @@ export default function ChatScreen() {
     distance?: string;
     address?: string;
   }>();
-
+  
   const incidentType  = (params.type     as IncidentType) ?? null;
   const incidentTitle = params.title    ?? null;
   const incidentDist  = params.distance ?? null;
   const incidentAddr  = params.address  ?? null;
   const hasIncident   = Boolean(incidentType && incidentTitle);
-
+  
   // ── Model lifecycle ───────────────────────────────────────────────────────
   useEffect(() => {
     let cancelled = false;
@@ -226,21 +297,25 @@ export default function ChatScreen() {
       scrollToBottom();
 
       try {
-        // 6. Stream the completion token-by-token into the assistant bubble
+        // 6. Build context-aware system prompt from incident type + user profile
+        const systemPrompt = buildSystemPrompt(incidentType, userRecordRef.current);
+
+        // Stream the completion token-by-token into the assistant bubble.
+        // Prepend system prompt as a user/assistant exchange so the model
+        // respects the emergency persona across all open-source GGUF models.
         const result = completion({
           modelId: currentModelId,
-          // Prepend system prompt as a user/assistant exchange so the model
-          // respects the emergency persona across all open-source GGUF models.
           history: [
-            { role: 'user', content: SYSTEM_PROMPT },
+            { role: 'user', content: systemPrompt },
             {
               role: 'assistant',
               content:
-                'Understood. I am Edgency, your emergency response assistant. I am calm, clear, and here to help.',
+                'Understood. I am Edgent, your emergency response assistant. I am calm, clear, and here to help.',
             },
             ...nextHistory.map((m) => ({ role: m.role, content: m.content })),
           ],
           stream: true,
+          toolDialect: 'hermes'
         });
 
         let accumulated = '';
@@ -288,6 +363,7 @@ export default function ChatScreen() {
       }
 
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [scrollToBottom, modelStatus]
   );
 
@@ -411,13 +487,6 @@ export default function ChatScreen() {
 
   const ListHeader = (
     <View style={styles.listHeader}>
-      <DispatchBanner
-        arrivalMins={4}
-        onViewMap={() => Alert.alert('Map', 'Map view coming soon.')}
-        // If your DispatchBanner accepts a subtitle prop, pass modelStatusLabel.
-        // If not, it degrades gracefully — the banner still renders fine.
-        {...(modelStatusLabel ? { subtitle: modelStatusLabel } : {})}
-      />
       {hasIncident && (
         <IncidentContextBanner
           type={incidentType!}

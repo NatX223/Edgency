@@ -125,16 +125,16 @@ function ResponderPortal() {
       {/* Incident list */}
       <View style={rp.list}>
         <IncidentCard
+          title="Medical"
+          example1="Seizures"
+          example2="bleeding"
+          type="medical"
+        />
+        <IncidentCard
           title="Earthquakes"
           example1="Land slides"
           example2="Tremors"
           type="earth"
-        />
-        <IncidentCard
-          title="Fires"
-          example1="Wildfire"
-          example2="Gas Leak"
-          type="fire"
         />
         <IncidentCard
           title="Floods"

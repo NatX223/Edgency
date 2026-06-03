@@ -63,9 +63,8 @@ export default function TabLayout() {
             {routes.map((route, i) => {
               const ICONS: Record<string, { emoji: string; label: string }> = {
                 index:     { emoji: '🏥', label: 'Emergency' },
-                messages:  { emoji: '💬', label: 'Messages'  },
-                incidents: { emoji: '⚡', label: 'Incidents'  },
-                profile:   { emoji: '👤', label: 'Profile'    },
+                chat:      { emoji: '💬', label: 'Chat'      },
+                profile:   { emoji: '👤', label: 'Profile'   },
               };
               const cfg = ICONS[route.name] ?? { emoji: '●', label: route.name };
               return (
@@ -83,8 +82,7 @@ export default function TabLayout() {
       }}
     >
       <Tabs.Screen name="index"     options={{ title: 'Emergency' }} />
-      <Tabs.Screen name="messages"  options={{ title: 'Messages'  }} />
-      <Tabs.Screen name="incidents" options={{ title: 'Incidents' }} />
+      <Tabs.Screen name="chat"      options={{ title: 'Chat'      }} />
       <Tabs.Screen name="profile"   options={{ title: 'Profile'   }} />
     </Tabs>
   );

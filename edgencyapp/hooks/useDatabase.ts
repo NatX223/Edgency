@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
 import * as SQLite from 'expo-sqlite';
+import { useEffect, useRef, useState } from 'react';
 
 // ─── User shape ───────────────────────────────────────────────────────────────
 export interface UserRecord {
