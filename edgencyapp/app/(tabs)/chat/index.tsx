@@ -1,47 +1,67 @@
-import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import {
-  View,
-  FlatList,
-  StyleSheet,
-  StatusBar,
-  SafeAreaView,
-  KeyboardAvoidingView,
-  Platform,
-  Alert,
-} from 'react-native';
-import { router, useLocalSearchParams } from 'expo-router';
-import { Colors, Spacing } from '@/constants/tokens';
 import {
   ChatHeader,
-  DispatchBanner,
-  SilentModeAlert,
+  type Message,
   MessageBubble,
   TypingIndicator,
-  ChatInputBar,
-  type Message,
-} from '@/components/chat';
-import { IncidentContextBanner } from '@/components/chat/IncidentContextBanner';
-import type { IncidentType } from '@/components/home/IncidentCard';
-import { useDatabase, type UserRecord } from '@/hooks/useDatabase';
+} from "@/components/chat";
+import { ChatInputBar, type StagedImage } from '@/components/chat/ChatInputBar';
+import { IncidentContextBanner } from "@/components/chat/IncidentContextBanner";
+import type { IncidentType } from "@/components/home/IncidentCard";
+import { Colors, Spacing } from "@/constants/tokens";
+import { useDatabase, type UserRecord } from "@/hooks/useDatabase";
+import { router, useLocalSearchParams } from "expo-router";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import {
+  Alert,
+  FlatList,
+  KeyboardAvoidingView,
+  Platform,
+  SafeAreaView,
+  StatusBar,
+  StyleSheet,
+  View,
+} from "react-native";
 
-import { useAudioRecorder } from '@/hooks/useAudioRecorder';
-import { useMediaPermissions } from '@/hooks/useMediaPermissions';
-import * as ImagePicker from 'expo-image-picker';
+import { resolve } from "node:path";
+
+import { useAudioRecorder } from "@/hooks/useAudioRecorder";
+import { useMediaPermissions } from "@/hooks/useMediaPermissions";
+import * as ImagePicker from "expo-image-picker";
+import * as FileSystem from 'expo-file-system';
+import * as Location from "expo-location";
+import { z } from "zod";
 
 import {
   completion,
   downloadAsset,
-  LLAMA_3_2_1B_INST_Q4_0,
+  GEMMA4_2B_MULTIMODAL_Q4_K_M,
+  MMPROJ_GEMMA4_2B_MULTIMODAL_F16,
+  // QWEN3_5_2B_MULTIMODAL_Q4_K_M,
   loadModel,
   type ModelProgressUpdate,
   unloadModel,
   VERBOSITY,
-} from '@qvac/sdk';
+} from "@qvac/sdk";
 
 // ─── QVAC model message shape ─────────────────────────────────────────────────
-type Role = 'user' | 'assistant';
-type ChatMessage = { id: string; role: Role; content: string };
+type Role = "user" | "assistant";
+type Attachment = {
+  path: string;
+};
 
+// 2. Add it to your core message structure as an optional array
+type ChatMessage = {
+  id: string;
+  role: Role;
+  content: string;
+  attachments?: Attachment[]; 
+};
 function makeId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
@@ -49,10 +69,10 @@ function makeId() {
 // ─── Seed messages (mirrors the design) ──────────────────────────────────────
 const SEED_MESSAGES: Message[] = [
   {
-    id: '1',
-    sender: 'ai',
+    id: "1",
+    sender: "ai",
     text: "Hello, I'm Edgent, your on-device emergency AI assistant. How can I assist you?",
-  }
+  },
 ];
 
 // ─── System prompt builder ────────────────────────────────────────────────────
@@ -61,34 +81,39 @@ function buildSystemPrompt(
   user: UserRecord | null
 ): string {
   const lines: string[] = [
-    'You are an emergency response AI assistant named Edgent.',
-    'The user is in an emergency situation. Be calm, clear, and supportive.',
-    'Give short, actionable guidance. Never panic or alarm the user further.',
+    "You are an emergency response AI assistant named Edgent.",
+    "The user is in an emergency situation. Be calm, clear, and supportive.",
+    "Give short, actionable guidance. Never panic or alarm the user further.",
+    '',
+    '## Image Analysis',
+    'If the user sends an image, analyse it carefully and use what you see to give more accurate emergency guidance.',
+    'Describe relevant details from the image (hazards, injuries, surroundings) and incorporate them into your response.',
+    '',
   ];
 
   if (incidentType) {
     lines.push(`\nCURRENT EMERGENCY TYPE: ${incidentType.toUpperCase()}.`);
     lines.push(
-      'Tailor every piece of advice specifically to this emergency type. ' +
-      'Prioritise guidance relevant to this incident above all else.'
+      "Tailor every piece of advice specifically to this emergency type. " +
+        "Prioritise guidance relevant to this incident above all else."
     );
   }
 
   if (user) {
-    lines.push('\nUSER PROFILE:');
+    lines.push("\nUSER PROFILE:");
     lines.push(`- Name: ${user.full_name}`);
-    lines.push(`- Sector / Location context: ${user.sector}`);
+    // lines.push(`- Sector / Location context: ${user.sector}`);
     lines.push(`- Role: ${user.role}`);
 
     if (user.experience_level) {
       lines.push(`- Experience level: ${user.experience_level}`);
-      if (user.experience_level === 'rookie') {
+      if (user.experience_level === "rookie") {
         lines.push(
-          '  (Use simple language and step-by-step instructions for this user.)'
+          "  (Use simple language and step-by-step instructions for this user.)"
         );
-      } else if (user.experience_level === 'veteran') {
+      } else if (user.experience_level === "veteran") {
         lines.push(
-          '  (This user has significant experience — be concise and use professional terminology.)'
+          "  (This user has significant experience — be concise and use professional terminology.)"
         );
       }
     }
@@ -107,11 +132,11 @@ function buildSystemPrompt(
 
     lines.push(
       "\nFactor the user's profile into every response. " +
-      'Account for any health conditions or disabilities that may affect what actions are safe or possible for them.'
+        "Account for any health conditions or disabilities that may affect what actions are safe or possible for them."
     );
   }
 
-  return lines.join('\n');
+  return lines.join("\n");
 }
 
 // Map UI Message[] seeds → QVAC history so the model has full context
@@ -120,9 +145,70 @@ function seedToHistory(seeds: Message[]): ChatMessage[] {
     .filter((m) => m.text) // skip image-only messages
     .map((m) => ({
       id: m.id,
-      role: m.sender === 'user' ? 'user' : 'assistant',
+      role: m.sender === "user" ? "user" : "assistant",
       content: m.text!,
     }));
+}
+
+const locationTool = {
+  name: "get_user_location",
+  description:
+    "Get the user's current GPS coordinates and a human-readable address." +
+    "Call this when you need to know where the user is — for example to advise on nearby " +
+    "hospitals, evacuation routes, or to relay location to emergency services.",
+  parameters: z.object({
+    name: z
+      .string()
+      .describe("the name of the user."),
+  }),
+  handler: async (args: Record<string, unknown>) => {
+    const { name } = args as { name: string };
+    try {
+      // Request permission if not already granted
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== "granted") {
+        return {
+          error: "Location permission denied by user.",
+          coordinates: null,
+          address: null,
+        };
+      }
+
+      // Get current position (balanced accuracy for speed)
+      const position = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+
+      const { latitude, longitude } = position.coords;
+
+      // Reverse geocode to a human-readable address
+      const [geo] = await Location.reverseGeocodeAsync({ latitude, longitude });
+
+      const address = geo
+        ? [geo.streetNumber, geo.street, geo.district, geo.city, geo.region]
+            .filter(Boolean)
+            .join(", ")
+        : "Address unavailable";
+
+      return "Jos South";
+    } catch (e: any) {
+      return {
+        error: `Location lookup failed: ${e?.message ?? String(e)}`,
+        coordinates: null,
+        address: null,
+      };
+    }
+  },
+};
+
+async function resolveLocalPath(uri: string): Promise<string> {
+  if (uri.startsWith('content://')) {
+    const dest = `${FileSystem.Directory}attachment_${Date.now()}.jpg`;
+    await FileSystem.copyAsync({ from: uri, to: dest });
+    return dest;
+  }
+  // file:// URIs — strip the scheme prefix for QVAC
+  return uri.replace('file://', '');
 }
 
 export default function ChatScreen() {
@@ -132,8 +218,13 @@ export default function ChatScreen() {
   const listRef = useRef<FlatList>(null);
 
   // ── Hooks ──────────────────────────────────────────────────────────────────
-  const { requestCamera, requestLibrary, requestMicrophone }  = useMediaPermissions();
-  const { state: recorderState, startRecording, stopRecording } = useAudioRecorder();
+  const { requestCamera, requestLibrary, requestMicrophone } =
+    useMediaPermissions();
+  const {
+    state: recorderState,
+    startRecording,
+    stopRecording,
+  } = useAudioRecorder();
 
   // ── Database / user profile ───────────────────────────────────────────────
   const { isReady: dbReady, getUser } = useDatabase();
@@ -148,17 +239,16 @@ export default function ChatScreen() {
         userRecordRef.current = u;
         setUserRecord(u);
       } catch (e) {
-        console.warn('[DB] Failed to load user profile:', e);
+        console.warn("[DB] Failed to load user profile:", e);
       }
     })();
   }, [dbReady]);
 
-
   // ── QVAC model state ──────────────────────────────────────────────────────
   const [modelId, setModelId] = useState<string | null>(null);
   const [modelStatus, setModelStatus] = useState<
-    'idle' | 'downloading' | 'loading' | 'ready' | 'error'
-  >('idle');
+    "idle" | "downloading" | "loading" | "ready" | "error"
+  >("idle");
   const [downloadPct, setDownloadPct] = useState<number | null>(null);
   const modelIdRef = useRef<string | null>(null);
 
@@ -177,56 +267,89 @@ export default function ChatScreen() {
     distance?: string;
     address?: string;
   }>();
-  
-  const incidentType  = (params.type     as IncidentType) ?? null;
-  const incidentTitle = params.title    ?? null;
-  const incidentDist  = params.distance ?? null;
-  const incidentAddr  = params.address  ?? null;
-  const hasIncident   = Boolean(incidentType && incidentTitle);
-  
+
+  const incidentType = (params.type as IncidentType) ?? null;
+  const incidentTitle = params.title ?? null;
+  const incidentDist = params.distance ?? null;
+  const incidentAddr = params.address ?? null;
+  const hasIncident = Boolean(incidentType && incidentTitle);
+
   // ── Model lifecycle ───────────────────────────────────────────────────────
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
       try {
-        setModelStatus('downloading');
+        setModelStatus("downloading");
+
+        const MODEL_URL = 'https://huggingface.co/buckets/NatXeth/MedPsy-1.7B-GGUF-bucket/resolve/medpsy-1.7b-q4_k_m-imat.gguf?download=true';
 
         await downloadAsset({
-          assetSrc: LLAMA_3_2_1B_INST_Q4_0,
+          assetSrc: MODEL_URL,
           onProgress: (progress: ModelProgressUpdate) => {
             if (!cancelled) setDownloadPct(Math.round(progress.percentage));
           },
         });
 
+        // await downloadAsset({
+        //   assetSrc: GEMMA4_2B_MULTIMODAL_Q4_K_M,
+        //   onProgress: (progress: ModelProgressUpdate) => {
+        //     if (!cancelled) setDownloadPct(Math.round(progress.percentage));
+        //   },
+        // });
+
+        // await downloadAsset({
+        //   assetSrc: MMPROJ_GEMMA4_2B_MULTIMODAL_F16,
+        //   onProgress: (progress: ModelProgressUpdate) => {
+        //     if (!cancelled) setDownloadPct(Math.round(progress.percentage));
+        //   },
+        // });
+        
         if (cancelled) return;
 
-        setModelStatus('loading');
+        setModelStatus("loading");
         setDownloadPct(null);
 
+        // const id = await loadModel({
+        //   modelSrc: GEMMA4_2B_MULTIMODAL_Q4_K_M,
+        //   modelType: "llamacpp-completion",
+        //   modelConfig: {
+        //     device: "gpu",
+        //     ctx_size: 4096,
+        //     verbosity: VERBOSITY.ERROR,
+        //     tools: true,
+        //     projectionModelSrc: MMPROJ_GEMMA4_2B_MULTIMODAL_F16
+        //   },
+        //   onProgress: (progress: ModelProgressUpdate) => {
+        //     if (!cancelled) setDownloadPct(Math.round(progress.percentage));
+        //   },
+        // });
+
         const id = await loadModel({
-          modelSrc: LLAMA_3_2_1B_INST_Q4_0,
-          modelType: 'llm',
+          modelSrc: MODEL_URL,
+          modelType: "llamacpp-completion",
           modelConfig: {
-            device: 'gpu',
-            ctx_size: 2048,
+            device: "gpu",
+            ctx_size: 4096,
             verbosity: VERBOSITY.ERROR,
+            // tools: true,
+            // projectionModelSrc: MMPROJ_GEMMA4_2B_MULTIMODAL_F16
           },
           onProgress: (progress: ModelProgressUpdate) => {
             if (!cancelled) setDownloadPct(Math.round(progress.percentage));
           },
-        });
+        });        
 
         if (cancelled) return;
 
         modelIdRef.current = id;
         setModelId(id);
-        setModelStatus('ready');
+        setModelStatus("ready");
         setDownloadPct(null);
       } catch (e: any) {
         if (!cancelled) {
-          setModelStatus('error');
-          console.error('[QVAC] Init failed:', e?.message ?? String(e));
+          setModelStatus("error");
+          console.error("[QVAC] Init failed:", e?.message ?? String(e));
         }
       }
     })();
@@ -242,24 +365,28 @@ export default function ChatScreen() {
   }, []);
 
   // ── Helpers ───────────────────────────────────────────────────────────────
+  const [stagedImage, setStagedImage] = useState<StagedImage | null>(null);
+
   const scrollToBottom = useCallback(() => {
     setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
   }, []);
 
   const appendUserMessage = useCallback(
-    async (msg: Message, aiContext?: string) => {
+    async (msg: Message, aiContext?: string, attachmentPath?: string) => {
       setMessages((prev) => [...prev, msg]);
       scrollToBottom();
 
       // Only trigger AI for text messages (media = no AI reply yet)
-      if (!aiContext) return;
+      if (!msg.text && !attachmentPath) return;
 
       // 2. Build the new history entry for QVAC
       const userHistoryMsg: ChatMessage = {
         id: msg.id,
-        role: 'user',
-        content: msg.text!,
+        role: "user",
+        content: msg.text?.trim() ? msg.text : "Analyze the photo",
+        ...(attachmentPath ? { attachments: [{ path: attachmentPath }] } : {}),
       };
+
       const nextHistory = [...historyRef.current, userHistoryMsg];
       setHistory(nextHistory);
       historyRef.current = nextHistory;
@@ -274,11 +401,11 @@ export default function ChatScreen() {
         setIsTyping(false);
         const fallbackMsg: Message = {
           id: makeId(),
-          sender: 'ai',
+          sender: "ai",
           text:
-            modelStatus === 'error'
-              ? 'The on-device model failed to load. Please restart the app.'
-              : 'The model is still loading — please try again in a moment.',
+            modelStatus === "error"
+              ? "The on-device model failed to load. Please restart the app."
+              : "The model is still loading — please try again in a moment.",
         };
         setMessages((prev) => [...prev, fallbackMsg]);
         scrollToBottom();
@@ -289,8 +416,8 @@ export default function ChatScreen() {
       const assistantMsgId = makeId();
       const placeholderUiMsg: Message = {
         id: assistantMsgId,
-        sender: 'ai',
-        text: '',
+        sender: "ai",
+        text: "",
       };
       setMessages((prev) => [...prev, placeholderUiMsg]);
       setIsTyping(false);
@@ -298,36 +425,69 @@ export default function ChatScreen() {
 
       try {
         // 6. Build context-aware system prompt from incident type + user profile
-        const systemPrompt = buildSystemPrompt(incidentType, userRecordRef.current);
+        const systemPrompt = buildSystemPrompt(
+          incidentType,
+          userRecordRef.current
+        );
+
+        const qvacHistory = [
+          { role: 'system', content: systemPrompt },
+          { role: 'assistant', content: 'Understood. I am Edgent, your emergency response assistant. I am calm, clear, and here to help.' },
+          ...nextHistory.map(m => ({
+            role:    m.role as 'user' | 'assistant',
+            content: m.content,
+            ...(m.attachments ? { attachments: [{ path: attachmentPath! }] } : {}),
+          })),
+        ];
 
         // Stream the completion token-by-token into the assistant bubble.
         // Prepend system prompt as a user/assistant exchange so the model
         // respects the emergency persona across all open-source GGUF models.
-        const result = completion({
+        const run = completion({
           modelId: currentModelId,
-          history: [
-            { role: 'user', content: systemPrompt },
-            {
-              role: 'assistant',
-              content:
-                'Understood. I am Edgent, your emergency response assistant. I am calm, clear, and here to help.',
-            },
-            ...nextHistory.map((m) => ({ role: m.role, content: m.content })),
-          ],
+          history: qvacHistory,
           stream: true,
-          toolDialect: 'hermes'
+          generationParams: { temp: 0.6, top_p: 0.95, top_k: 20, predict: 2048 },
+          captureThinking: true,
+          // tools: [locationTool]
         });
 
-        let accumulated = '';
+        let accumulated = "";
+        for await (const event of run.events) {
+          console.log(event.type);
+          
+          if (event.type === "contentDelta") {
+            // Streaming text token — append to bubble
+            accumulated += event.text;
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantMsgId ? { ...m, text: accumulated } : m
+              )
+            );
+          }
+          if (event.type === "toolCall") {
+            // Model requested the location tool — log for debug
+            console.log(
+              "[QVAC] Tool call:",
+              event.call.name,
+              event.call.arguments
+            );
+          }
+        }
 
-        for await (const token of result.tokenStream) {
-          accumulated += token;
-
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === assistantMsgId ? { ...m, text: accumulated } : m
-            )
-          );
+        // ── Invoke any pending tool calls after the stream ends ──────────────
+        const final = await run.final;
+        for (const toolCall of final.toolCalls) {
+          if (toolCall.invoke) {
+            const toolResult = await toolCall.invoke();
+            console.log("[QVAC] Tool result:", toolResult);
+            accumulated += toolResult;
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantMsgId ? { ...m, text: accumulated } : m
+              )
+            );
+          }
         }
 
         scrollToBottom();
@@ -335,7 +495,7 @@ export default function ChatScreen() {
         // 7. Persist the completed assistant message to history
         const assistantHistoryMsg: ChatMessage = {
           id: assistantMsgId,
-          role: 'assistant',
+          role: "assistant",
           content: accumulated,
         };
         const finalHistory = [...historyRef.current, assistantHistoryMsg];
@@ -344,24 +504,24 @@ export default function ChatScreen() {
 
         // Optional: log stats (dev only)
         try {
-          const stats = await result.stats;
-          console.log('[QVAC] Completion stats:', stats);
+          const stats = await run.stats;
+          console.log("[QVAC] Completion stats:", stats);
         } catch (_) {}
       } catch (e: any) {
         // 8. Show error in the assistant bubble
+        console.log(e?.message);
         setMessages((prev) =>
           prev.map((m) =>
             m.id === assistantMsgId
               ? {
                   ...m,
-                  text: `Something went wrong — ${e?.message ?? 'please try again.'}`,
+                  text: `Something went wrong — please try again.`,
                 }
               : m
           )
         );
         scrollToBottom();
       }
-
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [scrollToBottom, modelStatus]
@@ -370,9 +530,16 @@ export default function ChatScreen() {
   // ── Send handler — QVAC model Inferencing ───────────────────────────────────
 
   const handleSend = useCallback(
-    (text: string) => {
-      const msg: Message = { id: makeId(), sender: 'user', text };
-      appendUserMessage(msg, text);
+    (text: string, staged?: StagedImage) => {
+      const msg: Message = {
+        id:           makeId(),
+        sender:       'user',
+        text:         text || undefined,
+        imageUri:     staged?.uri,
+        imageCaption: text ? undefined : 'Image',
+      };
+      appendUserMessage(msg, text || undefined, staged?.localPath);
+      setStagedImage(null);
     },
     [appendUserMessage]
   );
@@ -390,41 +557,39 @@ export default function ChatScreen() {
 
     if (result.canceled || !result.assets[0]) return;
 
-    const asset = result.assets[0];
-    const msg: Message = {
-      id:           makeId(),
-      sender:       'user',
-      imageUri:     asset.uri,
-      imageCaption: 'Photo from camera',
-    };
-    // TODO: pass image to vision model here
-    appendUserMessage(msg);
-  }, [requestCamera, appendUserMessage]);
+    const uri = result.assets[0].uri;
+    try {
+      const localPath = await resolveLocalPath(uri);
+      setStagedImage({ uri, localPath });
+    } catch (e) {
+      console.warn('[Camera] path resolution failed:', e);
+      setStagedImage({ uri, localPath: uri });
+    }
+  }, [requestCamera]);
 
-  // ── Video ──────────────────────────────────────────────────────────────────
-  // const handleVideoPress = useCallback(async () => {
-  //   const ok = await requestCamera();
-  //   if (!ok) return;
+  const handleGalleryPress = useCallback(async () => {
+    const ok = await requestLibrary();
+    if (!ok) return;
 
-  //   const result = await ImagePicker.launchCameraAsync({
-  //     mediaTypes: ImagePicker.MediaTypeOptions.Videos,
-  //     videoMaxDuration: 60,
-  //     quality: ImagePicker.UIImagePickerControllerQualityType.Medium,
-  //     allowsEditing: false,
-  //   });
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.8,
+      allowsEditing: false,
+      allowsMultipleSelection: false,
+    });
 
-  //   if (result.canceled || !result.assets[0]) return;
+    if (result.canceled || !result.assets[0]) return;
 
-  //   const asset = result.assets[0];
-  //   const msg: Message = {
-  //     id:             makeId(),
-  //     sender:         'user',
-  //     videoUri:       asset.uri,
-  //     videoDurationMs: asset.duration ? asset.duration * 1000 : undefined,
-  //   };
-  //   // TODO: pass video to vision model here
-  //   appendUserMessage(msg);
-  // }, [requestCamera, appendUserMessage]);
+    const uri = result.assets[0].uri;
+    try {
+      const localPath = await resolveLocalPath(uri);
+      setStagedImage({ uri, localPath });
+    } catch (e) {
+      console.warn('[Gallery] path resolution failed:', e);
+      setStagedImage({ uri, localPath: uri });
+    }
+  }, [requestLibrary]);
+
 
   // ── Mic press-and-hold ─────────────────────────────────────────────────────
   const handleMicPressIn = useCallback(async () => {
@@ -441,29 +606,14 @@ export default function ChatScreen() {
     if (result.durationMs < 500) return;
 
     const msg: Message = {
-      id:             makeId(),
-      sender:         'user',
-      audioUri:       result.uri,
+      id: makeId(),
+      sender: "user",
+      audioUri: result.uri,
       audioDurationMs: result.durationMs,
     };
     // TODO: pass audio to transcription model here, then send text to AI
     appendUserMessage(msg);
   }, [stopRecording, appendUserMessage]);
-
-  // const handleCancelSOS = useCallback(() => {
-  //   Alert.alert(
-  //     'Cancel SOS?',
-  //     'This will notify emergency services that the situation has been resolved.',
-  //     [
-  //       { text: 'Keep SOS Active', style: 'cancel' },
-  //       {
-  //         text: 'Cancel SOS',
-  //         style: 'destructive',
-  //         onPress: () => router.replace('/(tabs)'),
-  //       },
-  //     ]
-  //   );
-  // }, []);
 
   // ── Render helpers ────────────────────────────────────────────────────────
   const renderItem = useCallback(
@@ -476,12 +626,12 @@ export default function ChatScreen() {
   // Augment the DispatchBanner subtitle with model loading progress so the
   // user is aware the AI is initialising — without changing any UI component.
   const modelStatusLabel = useMemo(() => {
-    if (modelStatus === 'downloading')
+    if (modelStatus === "downloading")
       return downloadPct != null
         ? `AI loading ${downloadPct}%…`
-        : 'AI downloading…';
-    if (modelStatus === 'loading') return 'AI initialising…';
-    if (modelStatus === 'error') return 'AI unavailable';
+        : "AI downloading…";
+    if (modelStatus === "loading") return "AI initializing…";
+    if (modelStatus === "error") return "AI unavailable";
     return undefined; // ready — show nothing extra
   }, [modelStatus, downloadPct]);
 
@@ -491,8 +641,8 @@ export default function ChatScreen() {
         <IncidentContextBanner
           type={incidentType!}
           title={incidentTitle!}
-          distance={incidentDist ?? ''}
-          address={incidentAddr ?? ''}
+          distance={modelStatusLabel ?? ""}
+          address={incidentAddr ?? ""}
         />
       )}
       {/* <SilentModeAlert /> */}
@@ -508,17 +658,21 @@ export default function ChatScreen() {
   // ── JSX (identical structure to the original) ─────────────────────────────
   return (
     <View style={styles.root}>
-      <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
+      <StatusBar
+        translucent
+        backgroundColor="transparent"
+        barStyle="light-content"
+      />
 
       <SafeAreaView style={styles.safe}>
         <ChatHeader
           onBack={() => router.back()}
-          onMore={() => Alert.alert('Options', 'More options coming soon.')}
+          onMore={() => Alert.alert("Options", "More options coming soon.")}
         />
 
         <KeyboardAvoidingView
           style={styles.flex}
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
           keyboardVerticalOffset={0}
         >
           <FlatList
@@ -537,11 +691,13 @@ export default function ChatScreen() {
           <ChatInputBar
             onSend={handleSend}
             onCameraPress={handleCameraPress}
+            onGalleryPress={handleGalleryPress}
             // onVideoPress={handleVideoPress}
             onMicPressIn={handleMicPressIn}
             onMicPressOut={handleMicPressOut}
-            // onCancelSOS={handleCancelSOS}
             recorderState={recorderState}
+            stagedImage={stagedImage}
+            onDiscardImage={() => setStagedImage(null)}
           />
         </KeyboardAvoidingView>
       </SafeAreaView>

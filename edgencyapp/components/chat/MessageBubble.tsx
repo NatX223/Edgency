@@ -8,6 +8,7 @@ import {
   Easing,
 } from 'react-native';
 import { Colors, Typography, Spacing, Radii } from '@/constants/tokens';
+import { VoiceBubble } from './VoiceBubble';
 
 export type MessageSender = 'ai' | 'user';
 
@@ -16,10 +17,12 @@ export interface Message {
   sender: MessageSender;
   text?: string;
   imageUri?: string;
+  imageCaption?: string;
   audioUri?: string;
   audioDurationMs?: number;
-  imageCaption?: string;
-  timestamp?: string;
+  videoUri?: string;
+  videoDurationMs?: number;
+  isStreaming?: boolean;
 }
 
 interface BubbleProps {
@@ -44,12 +47,30 @@ const av = StyleSheet.create({
   icon: { fontSize: 15 },
 });
 
+function StreamCursor() {
+  const opacity = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(opacity, { toValue: 0, duration: 500, easing: Easing.step0, useNativeDriver: true }),
+        Animated.timing(opacity, { toValue: 1, duration: 500, easing: Easing.step0, useNativeDriver: true }),
+      ])
+    ).start();
+  }, []);
+  return <Animated.Text style={[cur.char, { opacity }]}>▋</Animated.Text>;
+}
+const cur = StyleSheet.create({
+  char: { color: Colors.primaryContainer, fontSize: 14, lineHeight: 22 },
+});
+
+
 export function MessageBubble({ message, animDelay = 0 }: BubbleProps) {
   const isUser = message.sender === 'user';
 
   // Slide + fade entrance
   const opacity    = useRef(new Animated.Value(0)).current;
   const translateY = useRef(new Animated.Value(12)).current;
+  const didAnimate = useRef(false);
 
   useEffect(() => {
     Animated.parallel([
@@ -64,49 +85,50 @@ export function MessageBubble({ message, animDelay = 0 }: BubbleProps) {
     ]).start();
   }, []);
 
+  if (message.audioUri) {
+    return (
+      <Animated.View style={[styles.row, isUser ? styles.rowUser : styles.rowAI, { opacity, transform: [{ translateY }] }]}>
+        {!isUser && <AIAvatar />}
+        <VoiceBubble uri={message.audioUri} durationMs={message.audioDurationMs ?? 0} isUser={isUser} />
+      </Animated.View>
+    );
+  }
+
+  const hasImage       = Boolean(message.imageUri);
+  const hasText        = Boolean(message.text);
+  const showCursorOnly = message.isStreaming && !message.text;
+  const isCombined     = hasImage && hasText;
+
   return (
-    <Animated.View
-      style={[
-        styles.row,
-        isUser ? styles.rowUser : styles.rowAI,
-        { opacity, transform: [{ translateY }] },
-      ]}
-    >
-      {/* AI avatar — left side only */}
+    <Animated.View style={[styles.row, isUser ? styles.rowUser : styles.rowAI, { opacity, transform: [{ translateY }] }]}>
       {!isUser && <AIAvatar />}
 
-      {/* Bubble */}
-      <View
-        style={[
-          styles.bubble,
-          isUser ? styles.bubbleUser : styles.bubbleAI,
-          // Image-only bubble gets tighter padding
-          message.imageUri && !message.text ? styles.bubbleImage : null,
-        ]}
-      >
-        {/* Attached image */}
-        {message.imageUri && (
-          <View style={styles.imageWrap}>
-            <Image
-              source={{ uri: message.imageUri }}
-              style={styles.image}
-              resizeMode="cover"
-            />
+      <View style={[styles.bubble, isUser ? styles.bubbleUser : styles.bubbleAI]}>
+
+        {/* ── Image section ── */}
+        {hasImage && (
+          <View style={[styles.imageWrap, isCombined && styles.imageWrapWithText]}>
+            <Image source={{ uri: message.imageUri }} style={styles.image} resizeMode="cover" />
           </View>
         )}
 
-        {/* Caption under image */}
-        {message.imageCaption && (
+        {/* ── Caption (standalone, no text body) ── */}
+        {message.imageCaption && !hasText && (
           <Text style={[styles.caption, isUser && styles.captionUser]}>
             {message.imageCaption}
           </Text>
         )}
 
-        {/* Text body */}
-        {message.text && (
-          <Text style={[styles.text, isUser ? styles.textUser : styles.textAI]}>
-            {message.text}
-          </Text>
+        {/* ── Text body + streaming cursor ── */}
+        {(hasText || showCursorOnly) && (
+          <View style={[styles.textRow, hasImage && styles.textRowAfterImage]}>
+            {hasText && (
+              <Text style={[styles.text, isUser ? styles.textUser : styles.textAI]}>
+                {message.text}
+              </Text>
+            )}
+            {message.isStreaming && <StreamCursor />}
+          </View>
         )}
       </View>
     </Animated.View>
@@ -114,58 +136,58 @@ export function MessageBubble({ message, animDelay = 0 }: BubbleProps) {
 }
 
 const styles = StyleSheet.create({
-  row: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    gap: Spacing.sm,
-    maxWidth: '85%',
-  },
+  row:     { flexDirection: 'row', alignItems: 'flex-end', gap: Spacing.sm, maxWidth: '85%' },
   rowAI:   { alignSelf: 'flex-start' },
   rowUser: { alignSelf: 'flex-end' },
 
   bubble: {
     borderRadius: Radii.default,
     overflow: 'hidden',
+    // No padding at top-level — image takes full width; text gets own padding below
   },
   bubbleAI: {
     backgroundColor: Colors.surfaceContainerHigh,
-    paddingVertical: Spacing.md,
-    paddingHorizontal: Spacing.md,
     borderBottomLeftRadius: 4,
   },
   bubbleUser: {
     backgroundColor: 'rgba(255,126,95,0.18)',
     borderWidth: 1,
     borderColor: 'rgba(255,180,163,0.3)',
-    paddingVertical: Spacing.md,
-    paddingHorizontal: Spacing.md,
     borderBottomRightRadius: 4,
-    // Subtle coral glow
     shadowColor: Colors.primaryContainer,
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.12,
-    shadowRadius: 16,
-    elevation: 4,
-  },
-  bubbleImage: {
-    padding: Spacing.xs,
+    shadowOpacity: 0.12, shadowRadius: 16, elevation: 4,
   },
 
+  // Image fills bubble width; no border radius so it bleeds to bubble edges
   imageWrap: {
-    borderRadius: Radii.default - 2,
-    overflow: 'hidden',
-    marginBottom: Spacing.xs,
+    width: '100%',
+  },
+  imageWrapWithText: {
+    // When combined, image sits flush at top; text below has padding
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.06)',
   },
   image: {
     width: '100%',
-    height: 220,
-    borderRadius: Radii.default - 2,
+    height: 200,
   },
 
-  text:     { ...Typography.bodyMd, lineHeight: 22 },
+  caption:     { ...Typography.labelSm, color: Colors.primary, fontStyle: 'italic', opacity: 0.8, padding: Spacing.sm },
+  captionUser: { color: Colors.primaryContainer },
+
+  textRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    flexWrap: 'wrap',
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.md,
+  },
+  // When there's an image above, give text a bit more breathing room
+  textRowAfterImage: {
+    paddingTop: Spacing.sm,
+  },
+  text:     { ...Typography.bodyMd, lineHeight: 22, flexShrink: 1 },
   textAI:   { color: Colors.onSurface },
   textUser: { color: Colors.primary },
-
-  caption:     { ...Typography.labelSm, color: Colors.primary, fontStyle: 'italic', opacity: 0.8, paddingHorizontal: Spacing.xs, paddingBottom: Spacing.xs },
-  captionUser: { color: Colors.primaryContainer },
 });

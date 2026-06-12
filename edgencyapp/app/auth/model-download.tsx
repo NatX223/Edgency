@@ -13,6 +13,8 @@ import { router } from 'expo-router';
 import {
   downloadAsset,
   LLAMA_3_2_1B_INST_Q4_0,
+  QWEN3_4B_Q4_K_M,
+  MMPROJ_QWEN3VL_2B_MULTIMODAL_Q4_K,
   loadModel,
   VERBOSITY,
   type ModelProgressUpdate,
@@ -152,6 +154,13 @@ export default function ModelDownloadScreen() {
             if (!cancelled) setPct(Math.round(p.percentage));
           },
         });
+
+        // await downloadAsset({
+        //   assetSrc: MMPROJ_QWEN3VL_2B_MULTIMODAL_Q4_K,
+        //   onProgress: (p: ModelProgressUpdate) => {
+        //     if (!cancelled) setPct(Math.round(p.percentage));
+        //   },
+        // });
 
         if (cancelled) return;
 

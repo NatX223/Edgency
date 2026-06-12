@@ -49,7 +49,8 @@ const TYPE_CONFIG: Record<IncidentType, {
 
 export function IncidentContextBanner({
   type,
-  title
+  title,
+  distance
 }: IncidentContextBannerProps) {
   const cfg = TYPE_CONFIG[type] ?? TYPE_CONFIG.earth;
 
@@ -92,6 +93,7 @@ export function IncidentContextBanner({
       {/* Centre: incident info */}
       <View style={styles.info}>
         <Text style={styles.title}>{title}</Text>
+        <Text style={styles.title}>{distance}</Text>
       </View>
     </Animated.View>
   );
