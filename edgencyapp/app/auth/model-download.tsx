@@ -13,8 +13,8 @@ import { router } from 'expo-router';
 import {
   downloadAsset,
   LLAMA_3_2_1B_INST_Q4_0,
-  QWEN3_4B_Q4_K_M,
-  MMPROJ_QWEN3VL_2B_MULTIMODAL_Q4_K,
+  GEMMA4_2B_MULTIMODAL_Q4_K_M,
+  MMPROJ_GEMMA4_2B_MULTIMODAL_F16,
   loadModel,
   VERBOSITY,
   type ModelProgressUpdate,
@@ -149,18 +149,27 @@ export default function ModelDownloadScreen() {
       try {
         // 1. Download weights
         await downloadAsset({
-          assetSrc: LLAMA_3_2_1B_INST_Q4_0,
+          assetSrc: GEMMA4_2B_MULTIMODAL_Q4_K_M,
           onProgress: (p: ModelProgressUpdate) => {
             if (!cancelled) setPct(Math.round(p.percentage));
           },
         });
 
-        // await downloadAsset({
-        //   assetSrc: MMPROJ_QWEN3VL_2B_MULTIMODAL_Q4_K,
-        //   onProgress: (p: ModelProgressUpdate) => {
-        //     if (!cancelled) setPct(Math.round(p.percentage));
-        //   },
-        // });
+        await downloadAsset({
+          assetSrc: MMPROJ_GEMMA4_2B_MULTIMODAL_F16,
+          onProgress: (p: ModelProgressUpdate) => {
+            if (!cancelled) setPct(Math.round(p.percentage));
+          },
+        });
+
+        const MODEL_URL = 'https://huggingface.co/buckets/NatXeth/MedPsy-1.7B-GGUF-bucket/resolve/medpsy-1.7b-q4_k_m-imat.gguf?download=true';
+
+        await downloadAsset({
+          assetSrc: MODEL_URL,
+          onProgress: (progress: ModelProgressUpdate) => {
+            if (!cancelled) setPct(Math.round(progress.percentage));
+          },
+        });
 
         if (cancelled) return;
 

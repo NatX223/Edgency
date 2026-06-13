@@ -12,9 +12,7 @@ import {
   Dimensions,
 } from 'react-native';
 import { Colors, Typography, Spacing, Radii } from '@/constants/tokens';
-import { SOSButton }     from '@/components/home/SOSButton';
 import { IncidentCard }  from '@/components/home/IncidentCard';
-import { MapPreview }    from '@/components/home/MapPreview';
 import { AIStatusPill }  from '@/components/home/AIStatusPill';
 
 const { width } = Dimensions.get('window');

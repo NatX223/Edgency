@@ -28,25 +28,22 @@ import {
   View,
 } from "react-native";
 
-import { resolve } from "node:path";
 
 import { useAudioRecorder } from "@/hooks/useAudioRecorder";
 import { useMediaPermissions } from "@/hooks/useMediaPermissions";
-import * as ImagePicker from "expo-image-picker";
 import * as FileSystem from 'expo-file-system';
+import * as ImagePicker from "expo-image-picker";
 import * as Location from "expo-location";
 import { z } from "zod";
 
 import {
   completion,
   downloadAsset,
-  GEMMA4_2B_MULTIMODAL_Q4_K_M,
-  MMPROJ_GEMMA4_2B_MULTIMODAL_F16,
   // QWEN3_5_2B_MULTIMODAL_Q4_K_M,
   loadModel,
   type ModelProgressUpdate,
   unloadModel,
-  VERBOSITY,
+  VERBOSITY
 } from "@qvac/sdk";
 
 // ─── QVAC model message shape ─────────────────────────────────────────────────
