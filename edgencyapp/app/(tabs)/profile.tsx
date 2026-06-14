@@ -6,11 +6,40 @@ import {
   StyleSheet,
   ActivityIndicator,
   StatusBar,
+  TouchableOpacity,
 } from 'react-native';
+import { router } from 'expo-router';
 import { Colors, Typography, Spacing, Radii } from '@/constants/tokens';
-import { useDatabase, type UserRecord } from '@/hooks/useDatabase';
+import { useDatabase, type UserRecord, type ChatSession } from '@/hooks/useDatabase';
 
-// ─── Role badge ───────────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+const INCIDENT_META: Record<string, { emoji: string; label: string }> = {
+  medical: { emoji: '🏥', label: 'Medical' },
+  earth:   { emoji: '⛰️', label: 'Earthquake' },
+  flood:   { emoji: '🌊', label: 'Flood' },
+  storm:   { emoji: '🌪️', label: 'Storm' },
+};
+
+function formatDate(ts: number): string {
+  const d = new Date(ts);
+  const date = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const time = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  return `${date}, ${time}`;
+}
+
+function lastMessagePreview(session: ChatSession): string {
+  try {
+    const msgs = JSON.parse(session.messages_json) as Array<{ text?: string; sender: string }>;
+    const last = [...msgs].reverse().find(m => m.text?.trim());
+    return last?.text?.trim().slice(0, 90) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+// ─── Sub-components ───────────────────────────────────────────────────────────
+
 function RoleBadge({ role }: { role: string }) {
   const isResponder = role === 'responder';
   return (
@@ -22,7 +51,6 @@ function RoleBadge({ role }: { role: string }) {
   );
 }
 
-// ─── Section card ─────────────────────────────────────────────────────────────
 function InfoCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <View style={s.card}>
@@ -60,6 +88,41 @@ function TagList({ label, raw }: { label: string; raw?: string | null }) {
   );
 }
 
+function SessionCard({ session, onPress }: { session: ChatSession; onPress: () => void }) {
+  const meta    = INCIDENT_META[session.incident_type ?? ''];
+  const emoji   = meta?.emoji ?? '💬';
+  const label   = session.incident_title ?? meta?.label ?? 'General Chat';
+  const preview = lastMessagePreview(session);
+
+  return (
+    <TouchableOpacity style={s.sessionCard} onPress={onPress} activeOpacity={0.75}>
+      <View style={[s.sessionIconWrap, { backgroundColor: incidentBg(session.incident_type) }]}>
+        <Text style={s.sessionEmoji}>{emoji}</Text>
+      </View>
+
+      <View style={s.sessionBody}>
+        <Text style={s.sessionLabel} numberOfLines={1}>{label}</Text>
+        {preview ? (
+          <Text style={s.sessionPreview} numberOfLines={2}>{preview}</Text>
+        ) : null}
+        <Text style={s.sessionDate}>{formatDate(session.updated_at)}</Text>
+      </View>
+
+      <Text style={s.sessionChevron}>›</Text>
+    </TouchableOpacity>
+  );
+}
+
+function incidentBg(type: string | null): string {
+  switch (type) {
+    case 'medical': return 'rgba(255,180,163,0.15)';
+    case 'earth':   return 'rgba(25,180,163,0.15)';
+    case 'flood':   return 'rgba(193,200,202,0.15)';
+    case 'storm':   return 'rgba(197,192,255,0.15)';
+    default:        return 'rgba(255,255,255,0.08)';
+  }
+}
+
 const EXPERIENCE_LABELS: Record<string, string> = {
   rookie:       'Rookie',
   intermediate: 'Intermediate',
@@ -68,17 +131,30 @@ const EXPERIENCE_LABELS: Record<string, string> = {
 
 // ─── Screen ───────────────────────────────────────────────────────────────────
 export default function ProfileScreen() {
-  const { isReady, getUser } = useDatabase();
-  const [user, setUser] = useState<UserRecord | null>(null);
-  const [loading, setLoading] = useState(true);
+  const { isReady, getUser, getAllSessions } = useDatabase();
+  const [user,     setUser]     = useState<UserRecord | null>(null);
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [loading,  setLoading]  = useState(true);
 
   useEffect(() => {
     if (!isReady) return;
-    getUser().then(row => {
-      setUser(row);
+    Promise.all([getUser(), getAllSessions()]).then(([u, s]) => {
+      setUser(u);
+      setSessions(s);
       setLoading(false);
     });
   }, [isReady]);
+
+  const openSession = (session: ChatSession) => {
+    router.push({
+      pathname: '/(tabs)/chat',
+      params: {
+        sessionId: String(session.id),
+        type:      session.incident_type  ?? '',
+        title:     session.incident_title ?? 'Chat',
+      },
+    });
+  };
 
   return (
     <View style={s.root}>
@@ -98,7 +174,7 @@ export default function ProfileScreen() {
           contentContainerStyle={s.scroll}
           showsVerticalScrollIndicator={false}
         >
-          {/* Header */}
+          {/* ── User header ────────────────────────────────────────────── */}
           <View style={s.header}>
             <View style={s.avatar}>
               <Text style={s.avatarText}>
@@ -112,7 +188,7 @@ export default function ProfileScreen() {
             </View>
           </View>
 
-          {/* Health info */}
+          {/* ── Health info ────────────────────────────────────────────── */}
           <InfoCard title="Health Information">
             <InfoRow label="Medical history" value={user.medical_history || null} />
             <TagList  label="Conditions & allergies" raw={user.health_conditions} />
@@ -122,7 +198,7 @@ export default function ProfileScreen() {
             )}
           </InfoCard>
 
-          {/* Responder experience */}
+          {/* ── Responder experience ───────────────────────────────────── */}
           {user.role === 'responder' && user.experience_level && (
             <InfoCard title="Responder Details">
               <InfoRow
@@ -132,11 +208,37 @@ export default function ProfileScreen() {
             </InfoCard>
           )}
 
-          {/* Privacy note */}
+          {/* ── Chat history ───────────────────────────────────────────── */}
+          <View style={s.sectionHeader}>
+            <Text style={s.sectionTitle}>Chat History</Text>
+            <Text style={s.sectionCount}>{sessions.length}</Text>
+          </View>
+
+          {sessions.length === 0 ? (
+            <View style={s.emptyHistory}>
+              <Text style={s.emptyHistoryIcon}>💬</Text>
+              <Text style={s.emptyHistoryText}>No conversations yet.</Text>
+              <Text style={s.emptyHistoryHint}>
+                Start a chat by tapping an emergency type on the home screen.
+              </Text>
+            </View>
+          ) : (
+            <View style={s.sessionList}>
+              {sessions.map(session => (
+                <SessionCard
+                  key={session.id}
+                  session={session}
+                  onPress={() => openSession(session)}
+                />
+              ))}
+            </View>
+          )}
+
+          {/* ── Privacy note ───────────────────────────────────────────── */}
           <View style={s.privacyNote}>
             <Text style={s.privacyIcon}>🔒</Text>
             <Text style={s.privacyText}>
-              All profile data is stored only on this device and is never sent to external servers.
+              All profile and conversation data is stored only on this device and is never sent to external servers.
             </Text>
           </View>
         </ScrollView>
@@ -146,9 +248,9 @@ export default function ProfileScreen() {
 }
 
 const s = StyleSheet.create({
-  root:    { flex: 1, backgroundColor: Colors.background },
-  centered:{ flex: 1, alignItems: 'center', justifyContent: 'center' },
-  emptyText: { ...Typography.bodyMd, color: Colors.onSurfaceVariant },
+  root:     { flex: 1, backgroundColor: Colors.background },
+  centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  emptyText:{ ...Typography.bodyMd, color: Colors.onSurfaceVariant },
 
   bgGlow: {
     position: 'absolute',
@@ -166,7 +268,7 @@ const s = StyleSheet.create({
     gap: Spacing.lg,
   },
 
-  // Header
+  // ── Header
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -180,30 +282,20 @@ const s = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  avatarText: {
-    ...Typography.headlineMd,
-    color: Colors.onPrimaryContainer,
-    fontSize: 30,
-  },
+  avatarText: { ...Typography.headlineMd, color: Colors.onPrimaryContainer, fontSize: 30 },
   headerMeta: { flex: 1, gap: 4 },
   name:   { ...Typography.headlineMd, color: Colors.onSurface },
   sector: { ...Typography.bodyMd, color: Colors.onSurfaceVariant },
 
-  // Role badge
-  badge: {
-    alignSelf: 'flex-start',
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: Radii.full,
-    marginTop: 4,
-  },
+  // ── Role badge
+  badge:              { alignSelf: 'flex-start', paddingHorizontal: 12, paddingVertical: 4, borderRadius: Radii.full, marginTop: 4 },
   badgeResponder:     { backgroundColor: 'rgba(157,152,255,0.15)' },
   badgeUser:          { backgroundColor: 'rgba(255,126,95,0.12)' },
   badgeText:          { ...Typography.labelSm },
   badgeTextResponder: { color: Colors.tertiary },
   badgeTextUser:      { color: Colors.primaryContainer },
 
-  // Cards
+  // ── Info cards
   card: {
     backgroundColor: Colors.surfaceContainerLow,
     borderRadius: Radii.default,
@@ -212,21 +304,15 @@ const s = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.05)',
   },
-  cardTitle: {
-    ...Typography.labelMd,
-    color: Colors.primaryContainer,
-    marginBottom: 4,
-  },
-
-  // Info rows
-  infoRow: { gap: 2 },
-  infoLabel: { ...Typography.labelSm, color: Colors.onSurfaceVariant },
-  infoValue: { ...Typography.bodyMd, color: Colors.onSurface },
+  cardTitle:    { ...Typography.labelMd, color: Colors.primaryContainer, marginBottom: 4 },
+  infoRow:      { gap: 2 },
+  infoLabel:    { ...Typography.labelSm, color: Colors.onSurfaceVariant },
+  infoValue:    { ...Typography.bodyMd, color: Colors.onSurface },
   emptySection: { ...Typography.labelSm, color: Colors.onSurfaceVariant, fontStyle: 'italic' },
 
-  // Tags
+  // ── Tags
   tagSection: { gap: 6 },
-  tagRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  tagRow:     { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   tag: {
     backgroundColor: Colors.surfaceContainerHigh,
     borderRadius: Radii.full,
@@ -237,7 +323,70 @@ const s = StyleSheet.create({
   },
   tagText: { ...Typography.labelSm, color: Colors.onSurface },
 
-  // Privacy note
+  // ── Section header (chat history)
+  sectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+  },
+  sectionTitle: { ...Typography.labelMd, color: Colors.onSurface, flex: 1 },
+  sectionCount: {
+    ...Typography.labelSm,
+    color: Colors.onPrimaryContainer,
+    backgroundColor: Colors.primaryContainer,
+    borderRadius: Radii.full,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    overflow: 'hidden',
+  },
+
+  // ── Session list
+  sessionList: { gap: Spacing.sm },
+  sessionCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+    backgroundColor: Colors.surfaceContainerLow,
+    borderRadius: Radii.default,
+    padding: Spacing.md,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.05)',
+  },
+  sessionIconWrap: {
+    width: 44, height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  sessionEmoji:   { fontSize: 20 },
+  sessionBody:    { flex: 1, gap: 2 },
+  sessionLabel:   { ...Typography.labelMd, color: Colors.onSurface },
+  sessionPreview: { ...Typography.labelSm, color: Colors.onSurfaceVariant, lineHeight: 17 },
+  sessionDate:    { ...Typography.labelSm, color: Colors.outline, marginTop: 2 },
+  sessionChevron: { fontSize: 24, color: Colors.onSurfaceVariant, lineHeight: 28 },
+
+  // ── Empty history
+  emptyHistory: {
+    alignItems: 'center',
+    gap: Spacing.sm,
+    paddingVertical: Spacing.xl,
+    backgroundColor: Colors.surfaceContainerLow,
+    borderRadius: Radii.default,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.05)',
+  },
+  emptyHistoryIcon: { fontSize: 32 },
+  emptyHistoryText: { ...Typography.labelMd, color: Colors.onSurface },
+  emptyHistoryHint: {
+    ...Typography.labelSm,
+    color: Colors.onSurfaceVariant,
+    textAlign: 'center',
+    paddingHorizontal: Spacing.lg,
+    lineHeight: 18,
+  },
+
+  // ── Privacy note
   privacyNote: {
     flexDirection: 'row',
     gap: Spacing.sm,

@@ -9,7 +9,7 @@ import { IncidentContextBanner } from "@/components/chat/IncidentContextBanner";
 import type { IncidentType } from "@/components/home/IncidentCard";
 import { Colors, Spacing } from "@/constants/tokens";
 import { useDatabase, type UserRecord } from "@/hooks/useDatabase";
-import { router, useLocalSearchParams } from "expo-router";
+import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import React, {
   useCallback,
   useEffect,
@@ -243,9 +243,16 @@ export default function ChatScreen() {
   const { isReady: ragReady, search: ragSearch, status: ragStatus } = useRAG();
 
   // ── Database / user profile ───────────────────────────────────────────────
-  const { isReady: dbReady, getUser } = useDatabase();
+  const { isReady: dbReady, getUser, saveSession, getLatestSession, getSessionById } = useDatabase();
   const [userRecord, setUserRecord] = useState<UserRecord | null>(null);
   const userRecordRef = useRef<UserRecord | null>(null);
+
+  // ── Session persistence refs ───────────────────────────────────────────────
+  const sessionIdRef      = useRef<number | null>(null);   // DB row id of current session
+  const sessionLoadedRef  = useRef(false);                  // prevents double-load on re-render
+  const messagesRef       = useRef<Message[]>(SEED_MESSAGES);
+  const saveSessionRef    = useRef(saveSession);
+  saveSessionRef.current  = saveSession;                    // always points to latest fn
 
   useEffect(() => {
     if (!dbReady) return;
@@ -258,6 +265,38 @@ export default function ChatScreen() {
         console.warn("[DB] Failed to load user profile:", e);
       }
     })();
+  }, [dbReady]);
+
+  // ── Load session on mount ─────────────────────────────────────────────────
+  // • If opened from history (sessionIdParam set) → load that exact session
+  // • Otherwise → auto-resume the latest session for this incident type
+  useEffect(() => {
+    if (!dbReady || sessionLoadedRef.current) return;
+    sessionLoadedRef.current = true;
+
+    (async () => {
+      try {
+        const session = sessionIdParam
+          ? await getSessionById(sessionIdParam)
+          : await getLatestSession(incidentType);
+
+        if (!session) return;
+
+        const parsed = JSON.parse(session.messages_json) as Message[];
+        const cleaned = parsed.map(m => ({ ...m, isStreaming: false }));
+        if (cleaned.length > 0) {
+          setMessages(cleaned);
+          const restoredHistory = seedToHistory(cleaned);
+          setHistory(restoredHistory);
+          historyRef.current = restoredHistory;
+          sessionIdRef.current = session.id;
+        }
+      } catch (e) {
+        console.warn("[DB] Failed to restore chat session:", e);
+      }
+    })();
+  // route params are stable for the component's lifetime
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dbReady]);
 
   // ── QVAC model state ──────────────────────────────────────────────────────
@@ -282,10 +321,12 @@ export default function ChatScreen() {
     title?: string;
     distance?: string;
     address?: string;
+    sessionId?: string;   // set when opening from history — load that specific session
   }>();
 
-  const incidentType = (params.type as IncidentType) ?? null;
+  const incidentType  = (params.type as IncidentType) ?? null;
   const incidentTitle = params.title ?? null;
+  const sessionIdParam = params.sessionId ? Number(params.sessionId) : null;
   const incidentDist = params.distance ?? null;
   const incidentAddr = params.address ?? null;
   const hasIncident = Boolean(incidentType && incidentTitle);
@@ -389,7 +430,11 @@ export default function ChatScreen() {
 
   const appendUserMessage = useCallback(
     async (msg: Message, aiContext?: string, attachmentPath?: string) => {
-      setMessages((prev) => [...prev, msg]);
+      setMessages((prev) => {
+        const next = [...prev, msg];
+        messagesRef.current = next;
+        return next;
+      });
       scrollToBottom();
 
       // Only trigger AI for text messages (media = no AI reply yet)
@@ -536,6 +581,25 @@ export default function ChatScreen() {
         setHistory(finalHistory);
         historyRef.current = finalHistory;
 
+        // 8. Incrementally save to SQLite after each AI turn completes
+        // Build the full UI message list from messagesRef + the final assistant text
+        const msgsToSave = messagesRef.current.map(m =>
+          m.id === assistantMsgId
+            ? { ...m, text: accumulated, isStreaming: false }
+            : { ...m, isStreaming: false }
+        );
+        try {
+          const savedId = await saveSessionRef.current({
+            id: sessionIdRef.current,
+            incidentType,
+            incidentTitle,
+            messagesJson: JSON.stringify(msgsToSave),
+          });
+          sessionIdRef.current = savedId;
+        } catch (saveErr) {
+          console.warn("[DB] Failed to save chat session:", saveErr);
+        }
+
         // Optional: log stats (dev only)
         try {
           const stats = await run.stats;
@@ -559,6 +623,28 @@ export default function ChatScreen() {
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [scrollToBottom, modelStatus]
+  );
+
+  // ── Save on screen blur (tab-switch or back navigation) ──────────────────
+  useFocusEffect(
+    useCallback(() => {
+      return () => {
+        const msgs = messagesRef.current;
+        if (msgs.length <= SEED_MESSAGES.length) return; // nothing meaningful to save
+
+        const msgsJson = JSON.stringify(msgs.map(m => ({ ...m, isStreaming: false })));
+        saveSessionRef.current({
+          id: sessionIdRef.current,
+          incidentType,
+          incidentTitle,
+          messagesJson: msgsJson,
+        })
+          .then(id => { sessionIdRef.current = id; })
+          .catch(() => {}); // best-effort — incremental saves already cover most cases
+      };
+    // incidentType / incidentTitle are route params, stable for component lifetime
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [])
   );
 
   // ── Send handler — QVAC model Inferencing ───────────────────────────────────
