@@ -32,6 +32,7 @@ import {
 import { useAudioRecorder } from "@/hooks/useAudioRecorder";
 import { useMediaPermissions } from "@/hooks/useMediaPermissions";
 import * as FileSystem from 'expo-file-system';
+import { useRAG } from '@/hooks/useRag';  
 import * as ImagePicker from "expo-image-picker";
 import * as Location from "expo-location";
 import { z } from "zod";
@@ -75,7 +76,8 @@ const SEED_MESSAGES: Message[] = [
 // ─── System prompt builder ────────────────────────────────────────────────────
 function buildSystemPrompt(
   incidentType: IncidentType | null,
-  user: UserRecord | null
+  user: UserRecord | null,
+  ragChunks: string[] = []
 ): string {
   const lines: string[] = [
     "You are an emergency response AI assistant named Edgent.",
@@ -131,6 +133,21 @@ function buildSystemPrompt(
       "\nFactor the user's profile into every response. " +
         "Account for any health conditions or disabilities that may affect what actions are safe or possible for them."
     );
+  }
+
+  if (ragChunks.length > 0) {
+    lines.push('## Reference Material (WHO Prehospital Emergency Care Protocols)');
+    lines.push(
+      'Use the following passages as your PRIMARY clinical reference.',
+      'Base your instructions on these protocols wherever they apply.',
+      'You may cite step numbers or section names from the protocols.',
+      ''
+    );
+    ragChunks.forEach((chunk, i) => {
+      lines.push(`### Protocol ${i + 1}`);
+      lines.push(chunk.trim());
+      lines.push('');
+    });
   }
 
   return lines.join("\n");
@@ -222,6 +239,8 @@ export default function ChatScreen() {
     startRecording,
     stopRecording,
   } = useAudioRecorder();
+
+  const { isReady: ragReady, search: ragSearch, status: ragStatus } = useRAG();
 
   // ── Database / user profile ───────────────────────────────────────────────
   const { isReady: dbReady, getUser } = useDatabase();
@@ -421,10 +440,28 @@ export default function ChatScreen() {
       scrollToBottom();
 
       try {
+        let ragChunks: string[] = [];
+        if (ragReady && aiContext) {
+          try {
+            // Build a richer search query by combining the user message with
+            // the incident type for better semantic retrieval.
+            const searchQuery = incidentType
+              ? `${incidentType} emergency: ${msg.text}`
+              : msg.text;
+
+            const results = await ragSearch(searchQuery!, 3);
+            ragChunks = results.map(r => r.content).filter(Boolean);
+            console.log(`[RAG] Retrieved ${ragChunks.length} chunks for: "${searchQuery!.slice(0, 60)}"`);
+          } catch (ragErr) {
+            // RAG failure is non-fatal — model still responds without context
+            console.warn('[RAG] search failed (non-fatal):', ragErr);
+          }
+        }
         // 6. Build context-aware system prompt from incident type + user profile
         const systemPrompt = buildSystemPrompt(
           incidentType,
-          userRecordRef.current
+          userRecordRef.current,
+          ragChunks
         );
 
         const qvacHistory = [
@@ -629,8 +666,10 @@ export default function ChatScreen() {
         : "AI downloading…";
     if (modelStatus === "loading") return "AI initializing…";
     if (modelStatus === "error") return "AI unavailable";
+    if (modelStatus === 'ready' && !ragReady)
+      return `Indexing protocols… ${ragStatus.progress != null ? ragStatus.progress + '%' : ''}`.trim();
     return undefined; // ready — show nothing extra
-  }, [modelStatus, downloadPct]);
+  }, [modelStatus, downloadPct, ragReady, ragStatus]);
 
   const ListHeader = (
     <View style={styles.listHeader}>

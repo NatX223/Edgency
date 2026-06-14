@@ -8,6 +8,11 @@
     "scheme": "edgencyapp",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
+    "assetBundlePatterns": [
+      "assets/images/*",
+      "assets/rag/*",
+      "assets/fonts/*"
+    ],
     "ios": {
       "supportsTablet": true,
       "infoPlist": {

@@ -507,3 +507,6 @@ If agitated or violent: try to calm the patient. Ensure your own safety. If dang
 Place patient in position of comfort. Transport to closest most appropriate facility. Reassess frequently during transport. Keep patient covered.
 Be alert for signs of abuse or human trafficking — contact appropriate authorities per local protocol.
 Document the patient encounter. Hand over to receiving facility with full report of findings and treatment given.
+
+
+-----------------
