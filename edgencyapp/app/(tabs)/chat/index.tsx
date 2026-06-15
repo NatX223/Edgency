@@ -355,6 +355,9 @@ export default function ChatScreen() {
 
     (async () => {
       try {
+        setModelStatus("idle");
+        setModelId(null);
+        setDownloadPct(null);
         setModelStatus("downloading");
 
         if (isMedical) {
@@ -435,13 +438,12 @@ export default function ChatScreen() {
     return () => {
       cancelled = true;
       const id = modelIdRef.current;
+      modelIdRef.current = null;  // clear immediately so in-flight sends get the fallback
       if (id) {
         void unloadModel({ modelId: id, clearStorage: false }).catch(() => {});
       }
     };
-    // incidentType is a stable route param — intentionally not in deps
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [incidentType]);
 
   // ── Helpers ───────────────────────────────────────────────────────────────
   const [stagedImage, setStagedImage] = useState<StagedImage | null>(null);
