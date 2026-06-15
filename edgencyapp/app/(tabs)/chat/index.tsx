@@ -40,7 +40,8 @@ import { z } from "zod";
 import {
   completion,
   downloadAsset,
-  // QWEN3_5_2B_MULTIMODAL_Q4_K_M,
+  GEMMA4_2B_MULTIMODAL_Q4_K_M,
+  MMPROJ_GEMMA4_2B_MULTIMODAL_F16,
   loadModel,
   type ModelProgressUpdate,
   unloadModel,
@@ -305,7 +306,9 @@ export default function ChatScreen() {
     "idle" | "downloading" | "loading" | "ready" | "error"
   >("idle");
   const [downloadPct, setDownloadPct] = useState<number | null>(null);
-  const modelIdRef = useRef<string | null>(null);
+  const modelIdRef   = useRef<string | null>(null);
+  // 'medical' → MedPsy (text-only) | 'general' → Gemma multimodal
+  const modelTypeRef = useRef<'medical' | 'general'>('general');
 
   // Keep a parallel QVAC history in sync with the UI messages.
   // Initialised from seed messages so the model has context from the start.
@@ -332,73 +335,81 @@ export default function ChatScreen() {
   const hasIncident = Boolean(incidentType && incidentTitle);
 
   // ── Model lifecycle ───────────────────────────────────────────────────────
+  // Medical → MedPsy 1.7B (text-focused clinical model)
+  // All other emergencies → Gemma 4 2B multimodal (supports images + tools)
+  const MEDPSY_URL = 'https://huggingface.co/buckets/NatXeth/MedPsy-1.7B-GGUF-bucket/resolve/medpsy-1.7b-q4_k_m-imat.gguf?download=true';
+
   useEffect(() => {
     let cancelled = false;
+    const isMedical = incidentType === 'medical';
 
     (async () => {
       try {
         setModelStatus("downloading");
 
-        const MODEL_URL = 'https://huggingface.co/buckets/NatXeth/MedPsy-1.7B-GGUF-bucket/resolve/medpsy-1.7b-q4_k_m-imat.gguf?download=true';
+        if (isMedical) {
+          // ── MedPsy: single asset download ──────────────────────────────
+          await downloadAsset({
+            assetSrc: MEDPSY_URL,
+            onProgress: (p: ModelProgressUpdate) => {
+              if (!cancelled) setDownloadPct(Math.round(p.percentage));
+            },
+          });
+        } else {
+          // ── Gemma multimodal: model + projection model ─────────────────
+          await downloadAsset({
+            assetSrc: GEMMA4_2B_MULTIMODAL_Q4_K_M,
+            onProgress: (p: ModelProgressUpdate) => {
+              if (!cancelled) setDownloadPct(Math.round(p.percentage));
+            },
+            
+          });
+          await downloadAsset({
+            assetSrc: MMPROJ_GEMMA4_2B_MULTIMODAL_F16,
+            onProgress: (p: ModelProgressUpdate) => {
+              if (!cancelled) setDownloadPct(Math.round(p.percentage));
+            },
+          });
+        }
 
-        await downloadAsset({
-          assetSrc: MODEL_URL,
-          onProgress: (progress: ModelProgressUpdate) => {
-            if (!cancelled) setDownloadPct(Math.round(progress.percentage));
-          },
-        });
-
-        // await downloadAsset({
-        //   assetSrc: GEMMA4_2B_MULTIMODAL_Q4_K_M,
-        //   onProgress: (progress: ModelProgressUpdate) => {
-        //     if (!cancelled) setDownloadPct(Math.round(progress.percentage));
-        //   },
-        // });
-
-        // await downloadAsset({
-        //   assetSrc: MMPROJ_GEMMA4_2B_MULTIMODAL_F16,
-        //   onProgress: (progress: ModelProgressUpdate) => {
-        //     if (!cancelled) setDownloadPct(Math.round(progress.percentage));
-        //   },
-        // });
-        
         if (cancelled) return;
-
         setModelStatus("loading");
         setDownloadPct(null);
 
-        // const id = await loadModel({
-        //   modelSrc: GEMMA4_2B_MULTIMODAL_Q4_K_M,
-        //   modelType: "llamacpp-completion",
-        //   modelConfig: {
-        //     device: "gpu",
-        //     ctx_size: 4096,
-        //     verbosity: VERBOSITY.ERROR,
-        //     tools: true,
-        //     projectionModelSrc: MMPROJ_GEMMA4_2B_MULTIMODAL_F16
-        //   },
-        //   onProgress: (progress: ModelProgressUpdate) => {
-        //     if (!cancelled) setDownloadPct(Math.round(progress.percentage));
-        //   },
-        // });
-
-        const id = await loadModel({
-          modelSrc: MODEL_URL,
-          modelType: "llamacpp-completion",
-          modelConfig: {
-            device: "gpu",
-            ctx_size: 4096,
-            verbosity: VERBOSITY.ERROR,
-            // tools: true,
-            // projectionModelSrc: MMPROJ_GEMMA4_2B_MULTIMODAL_F16
-          },
-          onProgress: (progress: ModelProgressUpdate) => {
-            if (!cancelled) setDownloadPct(Math.round(progress.percentage));
-          },
-        });        
+        let id: string;
+        if (isMedical) {
+          id = await loadModel({
+            modelSrc: MEDPSY_URL,
+            modelType: "llamacpp-completion",
+            modelConfig: {
+              device: "gpu",
+              ctx_size: 4096,
+              verbosity: VERBOSITY.ERROR,
+            },
+            onProgress: (p: ModelProgressUpdate) => {
+              if (!cancelled) setDownloadPct(Math.round(p.percentage));
+            },
+          });
+          modelTypeRef.current = 'medical';
+        } else {
+          id = await loadModel({
+            modelSrc: GEMMA4_2B_MULTIMODAL_Q4_K_M,
+            modelType: "llamacpp-completion",
+            modelConfig: {
+              device: "gpu",
+              ctx_size: 4096,
+              verbosity: VERBOSITY.ERROR,
+              tools: true,
+              projectionModelSrc: MMPROJ_GEMMA4_2B_MULTIMODAL_F16,
+            },
+            onProgress: (p: ModelProgressUpdate) => {
+              if (!cancelled) setDownloadPct(Math.round(p.percentage));
+            },
+          });
+          modelTypeRef.current = 'general';
+        }
 
         if (cancelled) return;
-
         modelIdRef.current = id;
         setModelId(id);
         setModelStatus("ready");
@@ -418,6 +429,7 @@ export default function ChatScreen() {
         void unloadModel({ modelId: id, clearStorage: false }).catch(() => {});
       }
     };
+    // incidentType is a stable route param — intentionally not in deps
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -528,7 +540,8 @@ export default function ChatScreen() {
           stream: true,
           generationParams: { temp: 0.6, top_p: 0.95, top_k: 20, predict: 2048 },
           captureThinking: true,
-          // tools: [locationTool]
+          // Gemma supports tools (loaded with tools:true); MedPsy does not
+          ...(modelTypeRef.current === 'general' ? { tools: [locationTool] } : {}),
         });
 
         let accumulated = "";
