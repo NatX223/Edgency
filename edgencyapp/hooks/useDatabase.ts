@@ -83,9 +83,8 @@ export function useDatabase(): DatabaseState {
       }
     })();
 
-    return () => {
-      dbRef.current?.closeAsync().catch(() => {});
-    };
+    // No cleanup close — in-flight saveSession calls would hit a null handle (NPE).
+    // expo-sqlite manages the connection lifecycle; the OS closes it on app exit.
   }, []);
 
   // ── insertUser ─────────────────────────────────────────────────────────────

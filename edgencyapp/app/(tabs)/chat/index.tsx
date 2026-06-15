@@ -31,7 +31,7 @@ import {
 
 import { useAudioRecorder } from "@/hooks/useAudioRecorder";
 import { useMediaPermissions } from "@/hooks/useMediaPermissions";
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import { useRAG } from '@/hooks/useRag';  
 import * as ImagePicker from "expo-image-picker";
 import * as Location from "expo-location";
@@ -218,7 +218,7 @@ const locationTool = {
 
 async function resolveLocalPath(uri: string): Promise<string> {
   if (uri.startsWith('content://')) {
-    const dest = `${FileSystem.Directory}attachment_${Date.now()}.jpg`;
+    const dest = `${FileSystem.documentDirectory}attachment_${Date.now()}.jpg`;
     await FileSystem.copyAsync({ from: uri, to: dest });
     return dest;
   }
@@ -244,14 +244,13 @@ export default function ChatScreen() {
   const { isReady: ragReady, search: ragSearch, status: ragStatus } = useRAG();
 
   // ── Database / user profile ───────────────────────────────────────────────
-  const { isReady: dbReady, getUser, saveSession, getLatestSession, getSessionById } = useDatabase();
+  const { isReady: dbReady, getUser, saveSession, getSessionById } = useDatabase();
   const [userRecord, setUserRecord] = useState<UserRecord | null>(null);
   const userRecordRef = useRef<UserRecord | null>(null);
 
   // ── Session persistence refs ───────────────────────────────────────────────
-  const sessionIdRef      = useRef<number | null>(null);   // DB row id of current session
-  const sessionLoadedRef  = useRef(false);                  // prevents double-load on re-render
-  const messagesRef       = useRef<Message[]>(SEED_MESSAGES);
+  const sessionIdRef   = useRef<number | null>(null);   // DB row id of current session
+  const messagesRef    = useRef<Message[]>(SEED_MESSAGES);
   const saveSessionRef    = useRef(saveSession);
   saveSessionRef.current  = saveSession;                    // always points to latest fn
 
@@ -268,37 +267,21 @@ export default function ChatScreen() {
     })();
   }, [dbReady]);
 
-  // ── Load session on mount ─────────────────────────────────────────────────
-  // • If opened from history (sessionIdParam set) → load that exact session
-  // • Otherwise → auto-resume the latest session for this incident type
-  useEffect(() => {
-    if (!dbReady || sessionLoadedRef.current) return;
-    sessionLoadedRef.current = true;
+  // ── Route params ──────────────────────────────────────────────────────────
+  const params = useLocalSearchParams<{
+    type?: string;
+    title?: string;
+    distance?: string;
+    address?: string;
+    sessionId?: string;   // set when opening from history — load that specific session
+  }>();
 
-    (async () => {
-      try {
-        const session = sessionIdParam
-          ? await getSessionById(sessionIdParam)
-          : await getLatestSession(incidentType);
-
-        if (!session) return;
-
-        const parsed = JSON.parse(session.messages_json) as Message[];
-        const cleaned = parsed.map(m => ({ ...m, isStreaming: false }));
-        if (cleaned.length > 0) {
-          setMessages(cleaned);
-          const restoredHistory = seedToHistory(cleaned);
-          setHistory(restoredHistory);
-          historyRef.current = restoredHistory;
-          sessionIdRef.current = session.id;
-        }
-      } catch (e) {
-        console.warn("[DB] Failed to restore chat session:", e);
-      }
-    })();
-  // route params are stable for the component's lifetime
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dbReady]);
+  const incidentType   = (params.type as IncidentType) ?? null;
+  const incidentTitle  = params.title ?? null;
+  const sessionIdParam = params.sessionId ? Number(params.sessionId) : null;
+  const incidentDist   = params.distance ?? null;
+  const incidentAddr   = params.address ?? null;
+  const hasIncident    = Boolean(incidentType && incidentTitle);
 
   // ── QVAC model state ──────────────────────────────────────────────────────
   const [modelId, setModelId] = useState<string | null>(null);
@@ -311,28 +294,55 @@ export default function ChatScreen() {
   const modelTypeRef = useRef<'medical' | 'general'>('general');
 
   // Keep a parallel QVAC history in sync with the UI messages.
-  // Initialised from seed messages so the model has context from the start.
   const [history, setHistory] = useState<ChatMessage[]>(
     seedToHistory(SEED_MESSAGES)
   );
   const historyRef = useRef<ChatMessage[]>(history);
   historyRef.current = history;
 
-  // ── Route params ──────────────────────────────────────────────────────────
-  const params = useLocalSearchParams<{
-    type?: string;
-    title?: string;
-    distance?: string;
-    address?: string;
-    sessionId?: string;   // set when opening from history — load that specific session
-  }>();
+  // ── Reset conversation when incident type changes ─────────────────────────
+  // Tabs don't remount on navigation — detect param changes and wipe state.
+  const prevIncidentTypeRef = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    if (prevIncidentTypeRef.current === undefined) {
+      prevIncidentTypeRef.current = incidentType;
+      return;
+    }
+    if (prevIncidentTypeRef.current === incidentType) return;
+    prevIncidentTypeRef.current = incidentType;
 
-  const incidentType  = (params.type as IncidentType) ?? null;
-  const incidentTitle = params.title ?? null;
-  const sessionIdParam = params.sessionId ? Number(params.sessionId) : null;
-  const incidentDist = params.distance ?? null;
-  const incidentAddr = params.address ?? null;
-  const hasIncident = Boolean(incidentType && incidentTitle);
+    setMessages(SEED_MESSAGES);
+    messagesRef.current = SEED_MESSAGES;
+    const fresh = seedToHistory(SEED_MESSAGES);
+    setHistory(fresh);
+    historyRef.current = fresh;
+    sessionIdRef.current = null;
+  }, [incidentType]);
+
+  // ── Load session from history (only when sessionId param is explicitly set) ─
+  useEffect(() => {
+    if (!dbReady || !sessionIdParam) return;
+
+    (async () => {
+      try {
+        const session = await getSessionById(sessionIdParam);
+        if (!session) return;
+
+        const parsed = JSON.parse(session.messages_json) as Message[];
+        const cleaned = parsed.map(m => ({ ...m, isStreaming: false }));
+        if (cleaned.length > 0) {
+          setMessages(cleaned);
+          messagesRef.current = cleaned;
+          const restoredHistory = seedToHistory(cleaned);
+          setHistory(restoredHistory);
+          historyRef.current = restoredHistory;
+          sessionIdRef.current = session.id;
+        }
+      } catch (e) {
+        console.warn("[DB] Failed to restore chat session:", e);
+      }
+    })();
+  }, [dbReady, sessionIdParam]);
 
   // ── Model lifecycle ───────────────────────────────────────────────────────
   // Medical → MedPsy 1.7B (text-focused clinical model)
@@ -492,7 +502,11 @@ export default function ChatScreen() {
         sender: "ai",
         text: "",
       };
-      setMessages((prev) => [...prev, placeholderUiMsg]);
+      setMessages((prev) => {
+        const next = [...prev, placeholderUiMsg];
+        messagesRef.current = next;
+        return next;
+      });
       setIsTyping(false);
       scrollToBottom();
 
@@ -594,13 +608,16 @@ export default function ChatScreen() {
         setHistory(finalHistory);
         historyRef.current = finalHistory;
 
-        // 8. Incrementally save to SQLite after each AI turn completes
-        // Build the full UI message list from messagesRef + the final assistant text
-        const msgsToSave = messagesRef.current.map(m =>
-          m.id === assistantMsgId
-            ? { ...m, text: accumulated, isStreaming: false }
-            : { ...m, isStreaming: false }
-        );
+        // 8. Sync ref with final AI text, then save — keeps blur-save accurate too
+        setMessages(prev => {
+          const next = prev.map(m =>
+            m.id === assistantMsgId ? { ...m, text: accumulated, isStreaming: false } : m
+          );
+          messagesRef.current = next;
+          return next;
+        });
+
+        const msgsToSave = messagesRef.current.map(m => ({ ...m, isStreaming: false }));
         try {
           const savedId = await saveSessionRef.current({
             id: sessionIdRef.current,

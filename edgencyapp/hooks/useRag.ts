@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import { Asset } from 'expo-asset';
 import {
   downloadAsset,
@@ -10,6 +10,7 @@ import {
   ragReindex,
   ragSearch,
   unloadModel,
+  type LoadModelOptions,
   type ModelProgressUpdate,
 } from '@qvac/sdk';
 
@@ -66,8 +67,8 @@ async function copyAssetToFilesystem(
   moduleId: number,
   filename: string
 ): Promise<string> {
-  const destPath = `${FileSystem.Directory}rag/${filename}`;
-  const destDir  = `${FileSystem.Directory}rag/`;
+  const destPath = `${FileSystem.documentDirectory}rag/${filename}`;
+  const destDir  = `${FileSystem.documentDirectory}rag/`;
 
   // Ensure the directory exists
   const dirInfo = await FileSystem.getInfoAsync(destDir);
@@ -81,6 +82,20 @@ async function copyAssetToFilesystem(
 
   await FileSystem.copyAsync({ from: asset.localUri, to: destPath });
   return destPath;
+}
+
+// If a previous run crashed before unloading, the model stays registered.
+// Rather than hard-failing, extract the ID from the error and reuse it.
+async function safeLoadModel(
+  params: LoadModelOptions
+): Promise<string> {
+  try {
+    return await loadModel(params);
+  } catch (e: any) {
+    const match = e?.message?.match(/Model with ID "([^"]+)" is already registered/);
+    if (match) return match[1] as string;
+    throw e;
+  }
 }
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
@@ -138,7 +153,7 @@ export function useRAG(): UseRAGReturn {
         // ── Step 3: Load embeddings model ────────────────────────────────────
         setPhase('loading_model', 'Loading knowledge model…', 0);
 
-        const embModelId = await loadModel({
+        const embModelId = await safeLoadModel({
           modelSrc:    GTE_LARGE_FP16,
           modelType:   'embeddings',
           onProgress: (p: ModelProgressUpdate) => {
@@ -215,7 +230,8 @@ export function useRAG(): UseRAGReturn {
         }
 
         // ── Step 7a: Ingest medical protocols ────────────────────────────────
-        setPhase('ingesting', `Indexing ${medicalChunks.length} medical protocols…`, 0);
+        // progress: null while current===0 → shows indeterminate bar during cold-start
+        setPhase('ingesting', `Indexing ${medicalChunks.length} medical protocols…`, null);
 
         await ragIngest({
           modelId:   embModelId,
@@ -223,7 +239,7 @@ export function useRAG(): UseRAGReturn {
           workspace: WORKSPACE_MEDICAL,
           onProgress: (stage: string, current: number, total: number) => {
             if (!cancelledRef.current) {
-              const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+              const pct = current > 0 && total > 0 ? Math.round((current / total) * 100) : null;
               setPhase('ingesting', `Medical protocols… ${current}/${total}`, pct);
             }
           },
@@ -232,7 +248,7 @@ export function useRAG(): UseRAGReturn {
         if (cancelledRef.current) return;
 
         // ── Step 7b: Ingest earthquake + landslide protocols ─────────────────
-        setPhase('ingesting', `Indexing ${generalChunks.length} disaster protocols…`, 0);
+        setPhase('ingesting', `Indexing ${generalChunks.length} disaster protocols…`, null);
 
         await ragIngest({
           modelId:   embModelId,
@@ -240,7 +256,7 @@ export function useRAG(): UseRAGReturn {
           workspace: WORKSPACE_GENERAL,
           onProgress: (stage: string, current: number, total: number) => {
             if (!cancelledRef.current) {
-              const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+              const pct = current > 0 && total > 0 ? Math.round((current / total) * 100) : null;
               setPhase('ingesting', `Disaster protocols… ${current}/${total}`, pct);
             }
           },
@@ -249,7 +265,7 @@ export function useRAG(): UseRAGReturn {
         if (cancelledRef.current) return;
 
         // ── Step 7c: Ingest flood + tsunami protocols ─────────────────────────
-        setPhase('ingesting', `Indexing ${waterChunks.length} flood & tsunami protocols…`, 0);
+        setPhase('ingesting', `Indexing ${waterChunks.length} flood & tsunami protocols…`, null);
 
         await ragIngest({
           modelId:   embModelId,
@@ -257,7 +273,7 @@ export function useRAG(): UseRAGReturn {
           workspace: WORKSPACE_WATER,
           onProgress: (stage: string, current: number, total: number) => {
             if (!cancelledRef.current) {
-              const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+              const pct = current > 0 && total > 0 ? Math.round((current / total) * 100) : null;
               setPhase('ingesting', `Flood & tsunami protocols… ${current}/${total}`, pct);
             }
           },
@@ -266,7 +282,7 @@ export function useRAG(): UseRAGReturn {
         if (cancelledRef.current) return;
 
         // ── Step 7d: Ingest thunderstorm + lightning protocols ────────────────
-        setPhase('ingesting', `Indexing ${stormChunks.length} storm protocols…`, 0);
+        setPhase('ingesting', `Indexing ${stormChunks.length} storm protocols…`, null);
 
         await ragIngest({
           modelId:   embModelId,
@@ -274,7 +290,7 @@ export function useRAG(): UseRAGReturn {
           workspace: WORKSPACE_STORM,
           onProgress: (stage: string, current: number, total: number) => {
             if (!cancelledRef.current) {
-              const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+              const pct = current > 0 && total > 0 ? Math.round((current / total) * 100) : null;
               setPhase('ingesting', `Storm protocols… ${current}/${total}`, pct);
             }
           },
@@ -385,7 +401,7 @@ export function useRAG(): UseRAGReturn {
     let searchModelId: string | null = null;
 
     try {
-      searchModelId = await loadModel({
+      searchModelId = await safeLoadModel({
         modelSrc:  GTE_LARGE_FP16,
         modelType: 'embeddings',
       });

@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -15,6 +15,7 @@ import { Colors, Typography, Spacing, Radii } from '@/constants/tokens';
 import { IncidentCard }  from '@/components/home/IncidentCard';
 import { AIStatusPill }  from '@/components/home/AIStatusPill';
 import { useDatabase }   from '@/hooks/useDatabase';
+import { useFocusEffect } from 'expo-router';
 
 const { width } = Dimensions.get('window');
 
@@ -210,14 +211,16 @@ export default function HomeScreen() {
   const [userName, setUserName] = useState('');
   const [userRole, setUserRole] = useState('user');
 
-  useEffect(() => {
-    if (!dbReady) return;
-    getUser().then(u => {
-      if (!u) return;
-      setUserName(u.full_name);
-      setUserRole(u.role);
-    });
-  }, [dbReady]);
+  useFocusEffect(
+    useCallback(() => {
+      if (!dbReady) return;
+      getUser().then(u => {
+        if (!u) return;
+        setUserName(u.full_name);
+        setUserRole(u.role);
+      });
+    }, [dbReady])
+  );
 
   // Staggered entrance
   const fadeY = (offset = 20) => {
