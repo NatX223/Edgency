@@ -1,4 +1,4 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -14,6 +14,7 @@ import {
 import { Colors, Typography, Spacing, Radii } from '@/constants/tokens';
 import { IncidentCard }  from '@/components/home/IncidentCard';
 import { AIStatusPill }  from '@/components/home/AIStatusPill';
+import { useDatabase }   from '@/hooks/useDatabase';
 
 const { width } = Dimensions.get('window');
 
@@ -37,16 +38,31 @@ const tb = StyleSheet.create({
   menu: { fontSize: 22, color: Colors.onSurface },
 });
 
-function WelcomeSection() {
+const ROLE_LABEL: Record<string, string> = {
+  responder: 'First Responder',
+  user:      'Civilian',
+};
+
+function timeGreeting(): string {
+  const h = new Date().getHours();
+  if (h < 12) return 'Good morning';
+  if (h < 17) return 'Good afternoon';
+  if (h < 21) return 'Good evening';
+  return 'Good night';
+}
+
+function WelcomeSection({ name, role }: { name: string; role: string }) {
+  const firstName   = name.split(' ')[0] || name;
+  const roleLabel   = ROLE_LABEL[role] ?? 'User';
+
   return (
     <View style={ws.container}>
       <View>
-        <Text style={ws.greeting}>Good morning, Miller</Text>
-
+        <Text style={ws.greeting}>{timeGreeting()}, {firstName}</Text>
       </View>
       <View style={ws.locationPill}>
         <Text style={ws.locationIcon}>🟢</Text>
-        <Text style={ws.locationText}>First responder</Text>
+        <Text style={ws.locationText}>{roleLabel}</Text>
       </View>
     </View>
   );
@@ -190,6 +206,19 @@ const rp = StyleSheet.create({
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
 export default function HomeScreen() {
+  const { isReady: dbReady, getUser } = useDatabase();
+  const [userName, setUserName] = useState('');
+  const [userRole, setUserRole] = useState('user');
+
+  useEffect(() => {
+    if (!dbReady) return;
+    getUser().then(u => {
+      if (!u) return;
+      setUserName(u.full_name);
+      setUserRole(u.role);
+    });
+  }, [dbReady]);
+
   // Staggered entrance
   const fadeY = (offset = 20) => {
     const opacity = useRef(new Animated.Value(0)).current;
@@ -242,7 +271,7 @@ export default function HomeScreen() {
           showsVerticalScrollIndicator={false}
         >
           <Animated.View style={animStyle(welcomeAnim)}>
-            <WelcomeSection />
+            <WelcomeSection name={userName} role={userRole} />
           </Animated.View>
 
           {/* <Animated.View style={animStyle(sosAnim)}>
