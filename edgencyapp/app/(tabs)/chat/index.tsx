@@ -237,6 +237,13 @@ async function resolveLocalPath(uri: string): Promise<string> {
   return uri.replace('file://', '');
 }
 
+// ─── Emergency intent detection ──────────────────────────────────────────────
+const EMERGENCY_PATTERN = /\b(emergency|accident|injury|injured|hurt|pain|bleed|blood|unconscious|unresponsive|breathing|seizure|stroke|heart|cardiac|cpr|choking|drowning|burn|fracture|broken|wound|fire|earthquake|flood|storm|lightning|tsunami|landslide|trapped|evacuate|evacuation|collapse|danger|rescue|ambulance|hospital|doctor|nurse|help|sos|critical|severe|dead|dying|faint|dizzy|allergic|overdose|poisoning|electric|shock|threat|attack|disaster|crisis)\b/i;
+
+function hasEmergencyIntent(text: string): boolean {
+  return EMERGENCY_PATTERN.test(text);
+}
+
 // ─── Fallback protocol when AI is unavailable ─────────────────────────────────
 function buildFallbackProtocol(incidentType: string | null, answers: Record<string, string>): ParsedProtocol {
   const isCardiac = answers['breathing'] === 'breathing_no' || answers['conscious'] === 'conscious_no';
@@ -810,7 +817,8 @@ Return this exact shape:
 
       try {
         let ragChunks: string[] = [];
-        if (ragReady && aiContext) {
+        const shouldUseRAG = ragReady && aiContext && (incidentType !== null || hasEmergencyIntent(aiContext));
+        if (shouldUseRAG) {
           try {
             const results = await ragSearch(incidentType ? `${incidentType} emergency: ${msg.text}` : msg.text!, 3);
             ragChunks = results.map(r => r.content).filter(Boolean);
@@ -839,6 +847,8 @@ Return this exact shape:
 
         let accumulated = "";
         for await (const event of run.events) {
+          console.log(event.type);
+          
           if (event.type === "contentDelta") {
             accumulated += event.text;
             setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, text: accumulated } : m));

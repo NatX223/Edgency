@@ -431,7 +431,7 @@ export function useRAG(): UseRAGReturn {
       }
 
       combined.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
-      return combined.slice(0, topK);
+      return combined.filter(r => (r.score ?? 0) >= 0.5).slice(0, topK);
 
     } catch (e: any) {
       console.error('[useRAG] search failed:', e?.message ?? String(e));
