@@ -961,6 +961,7 @@ Return this exact shape:
             const result = await toolCall.invoke();
             // Translate tool results into readable notes instead of raw JSON
             const note = resolveToolResultNote(toolCall.name, result);
+            console.log(`[Tool] ${toolCall.name} result:`, result, note);
             if (note) {
               accumulated += `\n${note}`;
               setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, text: accumulated } : m));
