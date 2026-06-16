@@ -1,4 +1,4 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useMemo } from 'react';
 import {
   View,
   Text,
@@ -9,6 +9,7 @@ import {
 } from 'react-native';
 import { Colors, Typography, Spacing, Radii } from '@/constants/tokens';
 import { VoiceBubble } from './VoiceBubble';
+import { parseAIText, segmentsHaveSteps, RichAIContent } from './RichAIContent';
 
 import type { AgentCardData, TriageAssessmentData, ProtocolStepData, VitalsPanelData, TimerData } from '@/types/agent';
 
@@ -86,7 +87,6 @@ export function MessageBubble({ message, animDelay = 0 }: BubbleProps) {
   // Slide + fade entrance
   const opacity    = useRef(new Animated.Value(0)).current;
   const translateY = useRef(new Animated.Value(12)).current;
-  const didAnimate = useRef(false);
 
   useEffect(() => {
     Animated.parallel([
@@ -100,6 +100,16 @@ export function MessageBubble({ message, animDelay = 0 }: BubbleProps) {
       }),
     ]).start();
   }, []);
+
+  // Parse AI text for numbered steps only when streaming is done
+  const richSegments = useMemo(() => {
+    if (!isUser && message.text && !message.isStreaming) {
+      return parseAIText(message.text);
+    }
+    return null;
+  }, [isUser, message.text, message.isStreaming]);
+
+  const hasRichContent = richSegments ? segmentsHaveSteps(richSegments) : false;
 
   if (message.audioUri) {
     return (
@@ -115,11 +125,14 @@ export function MessageBubble({ message, animDelay = 0 }: BubbleProps) {
   const showCursorOnly = message.isStreaming && !message.text;
   const isCombined     = hasImage && hasText;
 
+  // Wide row for rich (step-card) AI content
+  const rowStyle = isUser ? styles.rowUser : (hasRichContent ? styles.rowAIWide : styles.rowAI);
+
   return (
-    <Animated.View style={[styles.row, isUser ? styles.rowUser : styles.rowAI, { opacity, transform: [{ translateY }] }]}>
+    <Animated.View style={[styles.row, rowStyle, { opacity, transform: [{ translateY }] }]}>
       {!isUser && <AIAvatar />}
 
-      <View style={[styles.bubble, isUser ? styles.bubbleUser : styles.bubbleAI]}>
+      <View style={[styles.bubble, isUser ? styles.bubbleUser : styles.bubbleAI, hasRichContent && styles.bubbleRich]}>
 
         {/* ── Image section ── */}
         {hasImage && (
@@ -135,8 +148,13 @@ export function MessageBubble({ message, animDelay = 0 }: BubbleProps) {
           </Text>
         )}
 
-        {/* ── Text body + streaming cursor ── */}
-        {(hasText || showCursorOnly) && (
+        {/* ── Rich step-card layout (AI only, post-stream) ── */}
+        {hasRichContent && richSegments && (
+          <RichAIContent segments={richSegments} />
+        )}
+
+        {/* ── Plain text body + streaming cursor ── */}
+        {!hasRichContent && (hasText || showCursorOnly) && (
           <View style={[styles.textRow, hasImage && styles.textRowAfterImage]}>
             {hasText && (
               <Text style={[styles.text, isUser ? styles.textUser : styles.textAI]}>
@@ -152,9 +170,10 @@ export function MessageBubble({ message, animDelay = 0 }: BubbleProps) {
 }
 
 const styles = StyleSheet.create({
-  row:     { flexDirection: 'row', alignItems: 'flex-end', gap: Spacing.sm, maxWidth: '85%' },
-  rowAI:   { alignSelf: 'flex-start' },
-  rowUser: { alignSelf: 'flex-end' },
+  row:       { flexDirection: 'row', alignItems: 'flex-end', gap: Spacing.sm, maxWidth: '85%' },
+  rowAI:     { alignSelf: 'flex-start' },
+  rowAIWide: { alignSelf: 'stretch', maxWidth: '100%' },
+  rowUser:   { alignSelf: 'flex-end' },
 
   bubble: {
     borderRadius: Radii.default,
@@ -164,6 +183,9 @@ const styles = StyleSheet.create({
   bubbleAI: {
     backgroundColor: Colors.surfaceContainerHigh,
     borderBottomLeftRadius: 4,
+  },
+  bubbleRich: {
+    flex: 1,
   },
   bubbleUser: {
     backgroundColor: 'rgba(255,126,95,0.18)',

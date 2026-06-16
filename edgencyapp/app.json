@@ -28,8 +28,11 @@
         "android.permission.RECORD_AUDIO",
         "android.permission.READ_MEDIA_IMAGES",
         "android.permission.READ_MEDIA_VIDEO",
-        "android.permission.ACCESS_FINE_LOCATION", 
-        "android.permission.ACCESS_COARSE_LOCATION"
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.VIBRATE",
+        "android.permission.SEND_SMS"
       ],
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
@@ -69,7 +72,15 @@
         }
       ],
       "@qvac/sdk/expo-plugin",
-      "expo-sqlite"
+      "expo-sqlite",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/icon.png",
+          "color": "#E6F4FE",
+          "defaultChannel": "edgency-checkins"
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

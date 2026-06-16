@@ -5,15 +5,27 @@ import {
   Inter_700Bold,
 } from '@expo-google-fonts/inter';
 import { useFonts } from 'expo-font';
+import * as Notifications from 'expo-notifications';
 import * as SplashScreen from 'expo-splash-screen';
-import { useCallback } from 'react';
-import { View } from 'react-native';
+import { useCallback, useEffect } from 'react';
+import { Platform, View } from 'react-native';
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import 'react-native-reanimated';
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
+
+// Show check-in alerts even when the app is foregrounded
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+    shouldShowBanner: true,
+    shouldShowList: true,
+  }),
+});
 
 export const unstable_settings = {
   anchor: '(tabs)',
@@ -28,6 +40,18 @@ export default function RootLayout() {
     Inter_600SemiBold,
     Inter_700Bold,
   });
+
+  // Create Android notification channel for check-in alerts
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    Notifications.setNotificationChannelAsync('edgency-checkins', {
+      name: 'Check-in Alerts',
+      importance: Notifications.AndroidImportance.MAX,
+      sound: 'default',
+      vibrationPattern: [0, 250, 250, 250],
+      lightColor: '#E6F4FE',
+    });
+  }, []);
 
   const onLayoutRootView = useCallback(async () => {
     if (fontsLoaded || fontError) {

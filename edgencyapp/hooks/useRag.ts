@@ -56,7 +56,7 @@ export interface RAGResult {
 export interface UseRAGReturn {
   status: RAGStatus;
   isReady: boolean;
-  search: (query: string, topK?: number) => Promise<RAGResult[]>;
+  search: (query: string, topK?: number, workspace?: string) => Promise<RAGResult[]>;
 }
 
 // ─── Asset copy helper ────────────────────────────────────────────────────────
@@ -391,12 +391,19 @@ export function useRAG(): UseRAGReturn {
   // and a cross-hazard question (e.g. "tsunami injury") gets the best from all.
   const search = useCallback(async (
     query: string,
-    topK = 3
+    topK = 3,
+    workspace?: string
   ): Promise<RAGResult[]> => {
     if (status.phase !== 'ready') {
       console.warn('[useRAG] search called before ready');
       return [];
     }
+
+    // When a workspace is specified, only search that one to avoid cross-domain
+    // contamination (e.g. lightning chunks appearing in medical responses).
+    const targets = workspace
+      ? [workspace]
+      : [WORKSPACE_MEDICAL, WORKSPACE_GENERAL, WORKSPACE_WATER, WORKSPACE_STORM];
 
     let searchModelId: string | null = null;
 
@@ -406,22 +413,16 @@ export function useRAG(): UseRAGReturn {
         modelType: 'embeddings',
       });
 
-      // Search all four workspaces in parallel
-      const [medicalResults, generalResults, waterResults, stormResults] = await Promise.allSettled([
-        ragSearch({ modelId: searchModelId, query, topK, workspace: WORKSPACE_MEDICAL }),
-        ragSearch({ modelId: searchModelId, query, topK, workspace: WORKSPACE_GENERAL }),
-        ragSearch({ modelId: searchModelId, query, topK, workspace: WORKSPACE_WATER }),
-        ragSearch({ modelId: searchModelId, query, topK, workspace: WORKSPACE_STORM }),
-      ]);
+      const settled = await Promise.allSettled(
+        targets.map(ws => ragSearch({ modelId: searchModelId!, query, topK, workspace: ws }))
+      );
 
       // Unload immediately to free memory for LLM
       await unloadModel({ modelId: searchModelId, clearStorage: false });
       searchModelId = null;
 
-      // Merge all candidates, sort by score, return global top-K
       const combined: RAGResult[] = [];
-
-      for (const result of [medicalResults, generalResults, waterResults, stormResults]) {
+      for (const result of settled) {
         if (result.status === 'fulfilled') {
           combined.push(...result.value.map(r => ({
             content: r.content ?? String(r),

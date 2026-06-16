@@ -38,11 +38,14 @@ import {
 
 import { useAudioRecorder } from "@/hooks/useAudioRecorder";
 import { useMediaPermissions } from "@/hooks/useMediaPermissions";
+import { useAgentTools } from "@/hooks/useAgentTools";
 import * as FileSystem from 'expo-file-system/legacy';
 import { useRAG } from '@/hooks/useRag';
+import * as Haptics from 'expo-haptics';
 import * as ImagePicker from "expo-image-picker";
 import * as Location from "expo-location";
 import { z } from "zod";
+import { Vibration } from "react-native";
 import type { AgentCardData, ParsedProtocol } from "@/types/agent";
 
 import {
@@ -52,6 +55,7 @@ import {
   MMPROJ_GEMMA4_2B_MULTIMODAL_F16,
   loadModel,
   type ModelProgressUpdate,
+  type ToolInput,
   unloadModel,
   VERBOSITY
 } from "@qvac/sdk";
@@ -63,6 +67,23 @@ type ChatMessage = { id: string; role: Role; content: string; attachments?: Atta
 
 function makeId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function resolveToolResultNote(toolName: string, result: any): string | null {
+  if (result?.error) return `⚠️ ${result.error}`;
+  switch (toolName) {
+    case 'get_user_location':
+      return result?.address
+        ? `📍 ${result.address}`
+        : result?.latitude != null
+          ? `📍 ${(result.latitude as number).toFixed(5)}, ${(result.longitude as number).toFixed(5)}`
+          : null;
+    case 'send_emergency_report':
+      return result?.success ? `✓ Emergency report sent to ${result.sentTo}.` : null;
+    // schedule_checkin and alert_user are background actions — show nothing in chat
+    default:
+      return null;
+  }
 }
 
 // ─── Per-incident assessment questions ───────────────────────────────────────
@@ -198,6 +219,12 @@ function buildSystemPrompt(
     });
   }
 
+  lines.push('\n## Autonomous Tools — use proactively, do NOT wait to be asked');
+  lines.push('- **send_emergency_report**: Call immediately when the user is trapped, bleeding severely, unconscious, or needs external rescue. Gather their profile + location and open the SMS composer to 112 or their emergency contact.');
+  lines.push('- **schedule_checkin**: Call after EVERY serious response. Use 60–120 s for critical situations, 180–300 s for stable-but-monitored. If the user stops responding the device will auto-alert them.');
+  lines.push('- **alert_user**: Call when the scheduled check-in went unanswered. Use "moderate" for no response; "urgent" if you suspect unconsciousness.');
+  lines.push('- **get_user_location**: Call when precise coordinates would aid evacuation or emergency dispatch.');
+
   return lines.join("\n");
 }
 
@@ -243,6 +270,15 @@ const EMERGENCY_PATTERN = /\b(emergency|accident|injury|injured|hurt|pain|bleed|
 function hasEmergencyIntent(text: string): boolean {
   return EMERGENCY_PATTERN.test(text);
 }
+
+// Maps incident type to its dedicated RAG workspace so searches never
+// pull chunks from unrelated domains (e.g. lightning into medical chat).
+const INCIDENT_WORKSPACE: Record<string, string> = {
+  medical: 'medical',
+  earth:   'general',
+  flood:   'water',
+  storm:   'storm',
+};
 
 // ─── Fallback protocol when AI is unavailable ─────────────────────────────────
 function buildFallbackProtocol(incidentType: string | null, answers: Record<string, string>): ParsedProtocol {
@@ -340,6 +376,11 @@ export default function ChatScreen() {
   const [history,  setHistory]  = useState<ChatMessage[]>([]);
   const historyRef = useRef<ChatMessage[]>([]);
   historyRef.current = history;
+
+  // ── Check-in / alert timer state ─────────────────────────────────────────
+  const lastUserActivityRef  = useRef<number>(Date.now());
+  const checkinTimerRef      = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const alertTimerRef        = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── Agent orchestration state ─────────────────────────────────────────────
   // Track which assessment question index we're on
@@ -516,6 +557,52 @@ export default function ChatScreen() {
     });
   }, []);
 
+  // ── Check-in helpers ─────────────────────────────────────────────────────
+  const clearCheckinTimers = useCallback(() => {
+    if (checkinTimerRef.current) { clearTimeout(checkinTimerRef.current); checkinTimerRef.current = null; }
+    if (alertTimerRef.current)   { clearTimeout(alertTimerRef.current);   alertTimerRef.current   = null; }
+  }, []);
+
+  const triggerPhysicalAlert = useCallback(async () => {
+    // SOS morse vibration pattern then haptic reinforcement
+    Vibration.vibrate(
+      [100,100,100,100,100,100,300,100,300,100,300,100,100,100,100,100,100],
+      false
+    );
+    for (let i = 0; i < 5; i++) {
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+      if (i < 4) await new Promise(r => setTimeout(r, 200));
+    }
+    appendMsg({
+      id: makeId(),
+      sender: 'ai',
+      text: '⚠️ I haven\'t heard from you. Your device is alerting nearby people. Call 112 immediately if you are able.',
+    });
+  }, [appendMsg]);
+
+  // Called by the schedule_checkin tool handler; wires up the foreground timer
+  const handleCheckinScheduled = useCallback((delaySecs: number, message: string) => {
+    clearCheckinTimers();
+    checkinTimerRef.current = setTimeout(() => {
+      // Only fire if user hasn't been active in the meantime
+      const idleSecs = (Date.now() - lastUserActivityRef.current) / 1000;
+      if (idleSecs < delaySecs - 10) return;
+
+      appendMsg({ id: makeId(), sender: 'ai', text: message });
+
+      // Give the user 90 more seconds before physically alerting
+      alertTimerRef.current = setTimeout(() => {
+        triggerPhysicalAlert();
+      }, 90_000);
+    }, delaySecs * 1000);
+  }, [clearCheckinTimers, triggerPhysicalAlert, appendMsg]);
+
+  // Cleanup timers on unmount
+  useEffect(() => () => clearCheckinTimers(), [clearCheckinTimers]);
+
+  // ── Agent tools (location + emergency report + check-in + alert) ─────────
+  const agentTools = useAgentTools({ getUser, onCheckinScheduled: handleCheckinScheduled });
+
   // ── parseProtocol — structured AI call to get the emergency protocol ──────
   const parseProtocol = useCallback(async (
     ragChunks: string[],
@@ -597,30 +684,36 @@ Return this exact shape:
 
       const allAnswers = { ...agentState.assessmentAnswers, [cardId]: value };
 
-      // Show typing while we parse
+      // Show a status message while waiting / generating
+      const modelReady = Boolean(modelIdRef.current);
+      const waitMsgId = makeId();
+      appendMsg({
+        id: waitMsgId,
+        sender: 'ai',
+        text: modelReady
+          ? 'Analyzing your situation…'
+          : 'Assessment complete. Waiting for AI model to finish loading before generating your protocol…',
+      });
       setIsTyping(true);
       scrollToBottom();
 
-      let ragChunks: string[] = [];
-      if (ragReady) {
-        try {
-          const results = await ragSearch(`${incidentType} emergency protocol`, 3);
-          ragChunks = results.map(r => r.content).filter(Boolean);
-        } catch (e) {
-          console.warn('[RAG] search failed:', e);
-        }
-      }
-
+      // RAG is intentionally skipped here: loading the GTE embeddings model
+      // while the LLM is already in GPU memory causes an OOM crash on device.
       let protocol: ParsedProtocol | null = null;
 
-      if (modelIdRef.current) {
-        protocol = await parseProtocol(ragChunks, incidentType, allAnswers);
-      }
+      protocol = await parseProtocol([], incidentType, allAnswers);
 
-      // Fallback if AI failed or model not ready
+      // Fallback if AI failed or timed out
       if (!protocol) {
         protocol = buildFallbackProtocol(incidentType, allAnswers);
       }
+
+      // Remove the waiting message
+      setMessages(prev => {
+        const next = prev.filter(m => m.id !== waitMsgId);
+        messagesRef.current = next;
+        return next;
+      });
 
       setIsTyping(false);
       parsingRef.current = false;
@@ -817,11 +910,17 @@ Return this exact shape:
 
       try {
         let ragChunks: string[] = [];
-        const shouldUseRAG = ragReady && aiContext && (incidentType !== null || hasEmergencyIntent(aiContext));
+        const shouldUseRAG = ragReady && aiContext && hasEmergencyIntent(aiContext);
         if (shouldUseRAG) {
           try {
-            const results = await ragSearch(incidentType ? `${incidentType} emergency: ${msg.text}` : msg.text!, 3);
+            const workspace = incidentType ? INCIDENT_WORKSPACE[incidentType] : undefined;
+            const results = await ragSearch(
+              incidentType ? `${incidentType} emergency: ${msg.text}` : msg.text!,
+              3,
+              workspace
+            );
             ragChunks = results.map(r => r.content).filter(Boolean);
+            
           } catch (e) { console.warn('[RAG] search failed:', e); }
         }
 
@@ -836,19 +935,20 @@ Return this exact shape:
           })),
         ];
 
+        const allTools = [locationTool, ...agentTools] as ToolInput[];
         const run = completion({
           modelId: currentModelId,
           history: qvacHistory,
           stream: true,
           generationParams: { temp: 0.6, top_p: 0.95, top_k: 20, predict: 2048 },
           captureThinking: true,
-          ...(modelTypeRef.current === 'general' ? { tools: [locationTool] } : {}),
+          ...(modelTypeRef.current === 'general' ? { tools: allTools } : {}),
         });
 
         let accumulated = "";
         for await (const event of run.events) {
           console.log(event.type);
-          
+
           if (event.type === "contentDelta") {
             accumulated += event.text;
             setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, text: accumulated } : m));
@@ -859,8 +959,12 @@ Return this exact shape:
         for (const toolCall of final.toolCalls) {
           if (toolCall.invoke) {
             const result = await toolCall.invoke();
-            accumulated += ` ${JSON.stringify(result)}`;
-            setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, text: accumulated } : m));
+            // Translate tool results into readable notes instead of raw JSON
+            const note = resolveToolResultNote(toolCall.name, result);
+            if (note) {
+              accumulated += `\n${note}`;
+              setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, text: accumulated } : m));
+            }
           }
         }
 
@@ -882,6 +986,8 @@ Return this exact shape:
           const savedId = await saveSessionRef.current({ id: sessionIdRef.current, incidentType, incidentTitle, messagesJson: JSON.stringify(msgsToSave) });
           sessionIdRef.current = savedId;
         } catch (e) { console.warn("[DB] Failed to save:", e); }
+
+        console.log(`chunks: ${ragChunks}, modelUsed: ${modelId}`);        
 
         try { const stats = await run.stats; console.log("[QVAC] Stats:", stats); } catch (_) {}
       } catch (e: any) {
@@ -908,10 +1014,13 @@ Return this exact shape:
 
   // ── Send handler ──────────────────────────────────────────────────────────
   const handleSend = useCallback((text: string, staged?: StagedImage) => {
+    // User is active — cancel any pending check-in / alert timers
+    lastUserActivityRef.current = Date.now();
+    clearCheckinTimers();
     const msg: Message = { id: makeId(), sender: 'user', text: text || undefined, imageUri: staged?.uri, imageCaption: text ? undefined : 'Image' };
     appendUserMessage(msg, text || undefined, staged?.localPath);
     setStagedImage(null);
-  }, [appendUserMessage]);
+  }, [appendUserMessage, clearCheckinTimers]);
 
   // ── Camera / gallery / mic ────────────────────────────────────────────────
   const handleCameraPress = useCallback(async () => {
