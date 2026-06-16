@@ -67,6 +67,8 @@ export const Colors = {
 
   // Semantic
   success: '#00B894',
+  danger:  '#ff4444',
+  warning: '#f5a623',
 } as const;
 
 export const Typography = {

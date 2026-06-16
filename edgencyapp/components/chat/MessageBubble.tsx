@@ -10,11 +10,15 @@ import {
 import { Colors, Typography, Spacing, Radii } from '@/constants/tokens';
 import { VoiceBubble } from './VoiceBubble';
 
+import type { AgentCardData, TriageAssessmentData, ProtocolStepData, VitalsPanelData, TimerData } from '@/types/agent';
+
 export type MessageSender = 'ai' | 'user';
+export type MessageType = 'text' | 'agent_card' | 'triage_assessment' | 'protocol_step' | 'vitals_panel' | 'inline_timer';
 
 export interface Message {
   id: string;
   sender: MessageSender;
+  type?: MessageType;         // undefined treated as 'text'
   text?: string;
   imageUri?: string;
   imageCaption?: string;
@@ -23,6 +27,18 @@ export interface Message {
   videoUri?: string;
   videoDurationMs?: number;
   isStreaming?: boolean;
+
+  // Agent component payloads (stored without callbacks)
+  agentCardProps?: AgentCardData;
+  triageProps?: TriageAssessmentData;
+  protocolStepProps?: ProtocolStepData;
+  vitalsPanelProps?: VitalsPanelData;
+  timerProps?: TimerData;
+
+  // State flags
+  completed?: boolean;
+  locked?: boolean;
+  selectedValue?: string;     // for agent_card — which option was tapped
 }
 
 interface BubbleProps {

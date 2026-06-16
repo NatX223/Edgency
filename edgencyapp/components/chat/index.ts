@@ -1,5 +1,5 @@
 export { MessageBubble }   from './MessageBubble';
-export type { Message, MessageSender } from './MessageBubble';
+export type { Message, MessageSender, MessageType } from './MessageBubble';
 export { DispatchBanner }  from './DispatchBanner';
 export { SilentModeAlert } from './SilentModeAlert';
 export { ChatInputBar }    from './ChatInputBar';

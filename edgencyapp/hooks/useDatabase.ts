@@ -10,6 +10,7 @@ export interface UserRecord {
   health_conditions: string;   // comma-separated
   disabilities: string;
   experience_level: 'rookie' | 'intermediate' | 'veteran' | null;
+  emergency_contact?: string;
 }
 
 // ─── Chat session shape ───────────────────────────────────────────────────────
@@ -44,15 +45,16 @@ const DB_NAME = 'edgency.db';
 
 const INIT_SQL = `
   CREATE TABLE IF NOT EXISTS users (
-    id               INTEGER PRIMARY KEY AUTOINCREMENT,
-    full_name        TEXT    NOT NULL,
-    sector           TEXT    NOT NULL,
-    role             TEXT    NOT NULL DEFAULT 'user',
-    medical_history  TEXT,
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    full_name         TEXT    NOT NULL,
+    sector            TEXT    NOT NULL,
+    role              TEXT    NOT NULL DEFAULT 'user',
+    medical_history   TEXT,
     health_conditions TEXT,
-    disabilities     TEXT,
-    experience_level TEXT,
-    created_at       INTEGER NOT NULL
+    disabilities      TEXT,
+    experience_level  TEXT,
+    emergency_contact TEXT,
+    created_at        INTEGER NOT NULL
   );
 
   CREATE TABLE IF NOT EXISTS chat_sessions (
@@ -77,6 +79,8 @@ export function useDatabase(): DatabaseState {
         const db = await SQLite.openDatabaseAsync(DB_NAME);
         dbRef.current = db;
         await db.execAsync(INIT_SQL);
+        // Migration: add emergency_contact if the column doesn't exist yet
+        try { await db.execAsync(`ALTER TABLE users ADD COLUMN emergency_contact TEXT`); } catch (_) {}
         setIsReady(true);
       } catch (e: any) {
         setError(e?.message ?? String(e));
