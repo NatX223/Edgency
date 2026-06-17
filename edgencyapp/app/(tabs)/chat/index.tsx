@@ -314,7 +314,7 @@ async function resolveLocalPath(uri: string): Promise<string> {
 }
 
 // ─── Emergency intent detection ──────────────────────────────────────────────
-const EMERGENCY_PATTERN = /\b(emergency|accident|injury|injured|hurt|pain|bleed|blood|unconscious|unresponsive|breathing|seizure|stroke|heart|cardiac|cpr|choking|drowning|burn|fracture|broken|wound|fire|earthquake|flood|storm|lightning|tsunami|landslide|stuck|rubble|trapped|evacuate|evacuation|collapse|danger|rescue|ambulance|hospital|doctor|nurse|help|sos|critical|severe|dead|dying|faint|dizzy|allergic|overdose|poisoning|electric|shock|threat|attack|disaster|crisis)\b/i;
+const EMERGENCY_PATTERN = /\b(emergency|accident|injury|injured|hurt|pain|bleed|bleeding|blood|unconscious|unresponsive|breathing|seizure|stroke|heart|cardiac|cpr|choking|drowning|burn|fracture|broken|wound|fire|earthquake|flood|storm|lightning|tsunami|landslide|stuck|rubble|trapped|evacuate|evacuation|collapse|danger|rescue|ambulance|hospital|doctor|nurse|help|sos|critical|severe|dead|dying|faint|dizzy|allergic|overdose|poisoning|electric|shock|threat|attack|disaster|crisis)\b/i;
 
 function hasEmergencyIntent(text: string): boolean {
   return EMERGENCY_PATTERN.test(text);
@@ -890,9 +890,11 @@ Return this exact shape:
           const tool = allToolsFlat.find(t => t.name === directive.tool);
           if (tool?.handler) {
             try {
+              console.log(`tool.name: ${tool.name}, tool.description: ${tool.description}`);              
               const result = await tool.handler(directive.args);
               const note = resolveToolResultNote(directive.tool, result);
               if (note) {
+                console.log(note);
                 accumulated += `\n${note}`;
                 setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, text: accumulated } : m));
               }
@@ -903,9 +905,11 @@ Return this exact shape:
         const final = await run.final;
         for (const toolCall of final.toolCalls) {
           if (toolCall.invoke) {
+            console.log(`toolCall.id: ${toolCall.id}, toolCall.name: ${toolCall.name}, toolCall.arguments: ${JSON.stringify(toolCall.arguments)}`);            
             const result = await toolCall.invoke();
             const note = resolveToolResultNote(toolCall.name, result);
             if (note) {
+              console.log(note);              
               accumulated += `\n${note}`;
               setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, text: accumulated } : m));
             }

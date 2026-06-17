@@ -20,9 +20,10 @@ On-device emergency response AI — real-time guidance for civilians and first r
 6. [QVAC Integration Deep Dive](#qvac-integration-deep-dive)
 7. [Setup and Deployment](#setup-and-deployment)
 8. [Reproducibility](#reproducibility)
-9. [Performance Log](#performance-log)
-10. [Future Improvements](#future-improvements)
-11. [Acknowledgments](#acknowledgments)
+9. [Screenshots](#screenshots)
+10. [Performance Log](#performance-log)
+11. [Future Improvements](#future-improvements)
+12. [Acknowledgments](#acknowledgments)
 
 ---
 
@@ -688,6 +689,18 @@ All demo recordings were captured on the following devices. Replace placeholder 
 6. Switch to **Earthquake** and attach a photo of a damaged building
 7. Observe Gemma 4 multimodal response with triage and evacuation instructions
 8. Tap the microphone, speak a query, and verify Whisper transcribes it before routing to the model
+
+---
+
+## Screenshots
+
+| Home Screen | Incident Triage | AI Response |
+|:-----------:|:---------------:|:-----------:|
+| ![Home Screen](screenshots/home-screen.png) | ![Earthquake Triage](screenshots/earthquake-triage.png) | ![AI Guidance](screenshots/ai-guidance.png) |
+
+| Protocol Steps | Protocol Complete | P2P Inference | User Profile |
+|:--------------:|:-----------------:|:-------------:|:------------:|
+| ![Protocol Steps](screenshots/protocol-steps.png) | ![Protocol Complete](screenshots/protocol-complete.png) | ![P2P Inference](screenshots/p2p-inference.png) | ![User Profile](screenshots/user-profile.png) |
 
 ---
 
