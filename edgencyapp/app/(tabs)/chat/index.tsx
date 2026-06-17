@@ -39,6 +39,8 @@ import {
 import { useAudioRecorder } from "@/hooks/useAudioRecorder";
 import { useMediaPermissions } from "@/hooks/useMediaPermissions";
 import { useAgentTools } from "@/hooks/useAgentTools";
+import { useVoiceModels } from "@/hooks/useVoiceModels";
+import { VoiceModelOnboarding } from "@/components/chat/VoiceModelOnboarding";
 import * as FileSystem from 'expo-file-system/legacy';
 import { useRAG } from '@/hooks/useRag';
 import * as Haptics from 'expo-haptics';
@@ -46,6 +48,7 @@ import * as ImagePicker from "expo-image-picker";
 import * as Location from "expo-location";
 import { z } from "zod";
 import { Vibration } from "react-native";
+import { Audio } from 'expo-av';
 import type { AgentCardData, ParsedProtocol } from "@/types/agent";
 
 import {
@@ -354,6 +357,7 @@ export default function ChatScreen() {
   // ── Hooks ──────────────────────────────────────────────────────────────────
   const { requestCamera, requestLibrary, requestMicrophone } = useMediaPermissions();
   const { state: recorderState, startRecording, stopRecording } = useAudioRecorder();
+  const voiceModels = useVoiceModels();
   const { isReady: ragReady, search: ragSearch, status: ragStatus } = useRAG();
   const { isReady: dbReady, getUser, saveSession, getSessionById } = useDatabase();
   const agentState = useAgentState();
@@ -408,6 +412,44 @@ export default function ChatScreen() {
   const [history,  setHistory]  = useState<ChatMessage[]>([]);
   const historyRef = useRef<ChatMessage[]>([]);
   historyRef.current = history;
+
+  // ── Voice onboarding state ────────────────────────────────────────────────
+  const [voiceOnboardingVisible, setVoiceOnboardingVisible] = useState(false);
+  const pendingVoiceUriRef = useRef<{ uri: string; durationMs: number } | null>(null);
+
+  // When models become ready: dismiss onboarding and process any pending voice message
+  useEffect(() => {
+    if (voiceModels.state.status !== 'ready') return;
+    setVoiceOnboardingVisible(false);
+
+    const pending = pendingVoiceUriRef.current;
+    if (!pending) return;
+    pendingVoiceUriRef.current = null;
+
+    const userVoiceMsg: Message = { id: makeId(), sender: 'user', audioUri: pending.uri, audioDurationMs: pending.durationMs };
+
+    voiceModels.transcribeAudio(pending.uri)
+      .then(transcribedText => {
+        if (!transcribedText) { appendUserMessage(userVoiceMsg); return; }
+        return appendUserMessage(
+          userVoiceMsg,
+          transcribedText,
+          undefined,
+          async (responseText) => {
+            const cleanText = stripActionDirectives(responseText).trim();
+            if (!cleanText) return;
+            const { uri: wavUri, durationMs } = await voiceModels.synthesizeSpeech(cleanText);
+            appendMsg({ id: makeId(), sender: 'ai', audioUri: wavUri, audioDurationMs: durationMs });
+            await Audio.setAudioModeAsync({ allowsRecordingIOS: false, playsInSilentModeIOS: true });
+            const { sound } = await Audio.Sound.createAsync({ uri: wavUri }, { shouldPlay: true });
+            sound.setOnPlaybackStatusUpdate(status => {
+              if (status.isLoaded && status.didJustFinish) sound.unloadAsync().catch(() => {});
+            });
+          },
+        );
+      })
+      .catch(e => { console.warn('[voice] pending message processing failed:', e); appendUserMessage(userVoiceMsg); });
+  }, [voiceModels.state.status]);
 
   // ── Check-in / alert timer state ─────────────────────────────────────────
   const lastUserActivityRef  = useRef<number>(Date.now());
@@ -900,7 +942,12 @@ Return this exact shape:
 
   // ── Regular text send (mid-protocol or no-incident chat) ─────────────────
   const appendUserMessage = useCallback(
-    async (msg: Message, aiContext?: string, attachmentPath?: string) => {
+    async (
+      msg: Message,
+      aiContext?: string,
+      attachmentPath?: string,
+      onAfterResponse?: (text: string) => Promise<void>,
+    ) => {
       setMessages(prev => {
         const next = [...prev, msg];
         messagesRef.current = next;
@@ -1047,7 +1094,12 @@ Return this exact shape:
           sessionIdRef.current = savedId;
         } catch (e) { console.warn("[DB] Failed to save:", e); }
 
-        console.log(`chunks: ${ragChunks}, modelUsed: ${modelId}`);        
+        console.log(`chunks: ${ragChunks}, modelUsed: ${modelId}`);
+
+        // Voice callback — synthesize TTS after LLM response is final
+        if (onAfterResponse) {
+          try { await onAfterResponse(accumulated); } catch (e) { console.warn('[voice] onAfterResponse error:', e); }
+        }
 
         try { const stats = await run.stats; console.log("[QVAC] Stats:", stats); } catch (_) {}
       } catch (e: any) {
@@ -1134,8 +1186,65 @@ Return this exact shape:
   const handleMicPressOut = useCallback(async () => {
     const result = await stopRecording();
     if (!result || result.durationMs < 500) return;
-    appendUserMessage({ id: makeId(), sender: "user", audioUri: result.uri, audioDurationMs: result.durationMs });
-  }, [stopRecording, appendUserMessage]);
+
+    const userVoiceMsg: Message = {
+      id: makeId(),
+      sender: 'user',
+      audioUri: result.uri,
+      audioDurationMs: result.durationMs,
+    };
+
+    // Voice models not yet downloaded → show onboarding, defer the message
+    if (!voiceModels.isReady) {
+      pendingVoiceUriRef.current = { uri: result.uri, durationMs: result.durationMs };
+      setVoiceOnboardingVisible(true);
+      return;
+    }
+
+    // Transcribe the voice message
+    let transcribedText = '';
+    try {
+      transcribedText = await voiceModels.transcribeAudio(result.uri);
+    } catch (e) {
+      console.warn('[voice] transcription failed:', e);
+    }
+
+    // No transcription → show voice bubble only (no AI response)
+    if (!transcribedText) {
+      appendUserMessage(userVoiceMsg);
+      return;
+    }
+
+    // Full voice pipeline: voice bubble → LLM → TTS → AI voice bubble
+    await appendUserMessage(
+      userVoiceMsg,
+      transcribedText,
+      undefined,
+      async (responseText) => {
+        const cleanText = stripActionDirectives(responseText).trim();
+        if (!cleanText) return;
+        try {
+          const { uri: wavUri, durationMs } = await voiceModels.synthesizeSpeech(cleanText);
+          appendMsg({ id: makeId(), sender: 'ai', audioUri: wavUri, audioDurationMs: durationMs });
+
+          // Auto-play the AI voice response
+          try {
+            await Audio.setAudioModeAsync({ allowsRecordingIOS: false, playsInSilentModeIOS: true });
+            const { sound } = await Audio.Sound.createAsync({ uri: wavUri }, { shouldPlay: true });
+            sound.setOnPlaybackStatusUpdate(status => {
+              if (status.isLoaded && status.didJustFinish) {
+                sound.unloadAsync().catch(() => {});
+              }
+            });
+          } catch (e) {
+            console.warn('[voice] auto-play failed:', e);
+          }
+        } catch (e) {
+          console.warn('[voice] TTS synthesis failed:', e);
+        }
+      },
+    );
+  }, [stopRecording, voiceModels, appendUserMessage, appendMsg]);
 
   const handleFindAED = useCallback(() => {
     const id = makeId();
@@ -1228,6 +1337,13 @@ Return this exact shape:
   return (
     <View style={styles.root}>
       <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
+
+      <VoiceModelOnboarding
+        visible={voiceOnboardingVisible}
+        state={voiceModels.state}
+        onDownload={voiceModels.startDownload}
+        onDismiss={() => setVoiceOnboardingVisible(false)}
+      />
 
       <SafeAreaView style={styles.safe}>
         <AgentStatusBar
