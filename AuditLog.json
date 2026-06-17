@@ -1,0 +1,88 @@
+{
+  "audit_log": {
+    "session_metadata": {
+      "device_brand": "google",
+      "device_model": "Pixel 7",
+      "platform": "android",
+      "runtime": "react-native",
+      "sdk_config": "no config file found, using SDK defaults",
+      "android_architecture": "arm64-v8a"
+    },
+    "events": [
+      {
+        "event_id": 1,
+        "event_type": "sdk_init",
+        "timestamp": null,
+        "details": {
+          "status": "initialization complete",
+          "warnings": [
+            "ImagePicker.MediaTypeOptions deprecated — use ImagePicker.MediaType or an array of ImagePicker.MediaType instead",
+            "expo-av deprecated, will be removed in SDK 54 — use expo-audio and expo-video"
+          ]
+        }
+      },
+      {
+        "event_id": 2,
+        "event_type": "model_load",
+        "timestamp": null,
+        "model_id": "396fd72aab493022",
+        "backend_device": "gpu",
+        "result": "loaded",
+        "notes": "INFERRED — not explicitly present in the supplied log excerpt. Placed here to reflect the expected load order (model must be loaded before inference_call event_id 3 can run). Replace with the real loadModel() timestamp/duration once logging instrumentation is added — see log_completeness_flags below."
+      },
+      {
+        "event_id": 3,
+        "event_type": "inference_call",
+        "model_used": "396fd72aab493022",
+        "backend_device": "gpu",
+        "incident_type": "earthquake",
+        "prompt_text": "I'm stuck under the rubble and I can't move",
+        "response_text": "I am Edgent. Please stay calm. I see you are trapped under rubble.\n\nImmediate Actions:\n1. Stay Still: Do not try to move if you can avoid it. Movement can worsen injuries, especially if you have a spinal injury.\n2. Check for Injuries: Carefully check yourself for any severe bleeding or obvious fractures.\n3. Signal for Help: If you can, try to make yourself visible to rescuers. If you have a phone, try to call emergency services immediately.\n\nIf you are bleeding significantly, apply firm, direct pressure to the wound.\n\nI am sending an emergency report now.\n✓ Emergency report sent to 112.",
+        "rag_chunks_retrieved": [
+          {
+            "source": "Earthquake — If Outdoors During Shaking",
+            "content_summary": "If outdoors when an earthquake starts, stay outdoors; move away from buildings, streetlights, and utility wires; drop to knees and stay until shaking stops; greatest danger is falling glass/debris near building exteriors."
+          },
+          {
+            "source": "Earthquake — After: Check Yourself and Your Building",
+            "content_summary": "After shaking stops, check yourself for injury before helping others; if in a damaged building, go outside immediately and move away; do not re-enter damaged buildings; wear sturdy shoes and gloves moving through debris."
+          },
+          {
+            "source": "Earthquake + Landslide — Assessing Injuries After",
+            "content_summary": "Check for bleeding, fractures, head injuries, and spinal injuries before moving anyone; immobilize spine if trauma suspected; control active bleeding with direct pressure; for altered mental status after head trauma, assess pupils and maintain SpO2 above 92%; transport urgently."
+          }
+        ],
+        "rag_workspace": "general",
+        "performance_stats": {
+          "cache_tokens": 0,
+          "prompt_tokens": 1535,
+          "generated_tokens": 829,
+          "time_to_first_token_ms": 80435.959,
+          "tokens_per_second": 5.444903419662726
+        }
+      },
+      {
+        "event_id": 4,
+        "event_type": "tool_call",
+        "tool_name": "send_emergency_report",
+        "tool_description": "Compile the user's medical profile and current GPS location into an emergency SMS and open the device SMS composer pre-filled, ready to send to emergency services (112) or their personal emergency contact. Call this WITHOUT waiting to be asked when the user is trapped, bleeding severely, unconscious, or in any life-threatening condition where external rescue is needed.",
+        "result": "success",
+        "result_detail": "Emergency report sent to 112."
+      },
+      {
+        "event_id": 5,
+        "event_type": "tool_call",
+        "tool_name": "schedule_checkin",
+        "tool_description": "Schedule an automatic follow-up to check if the user is still conscious and able to respond. Fires a device push notification (works even when the app is in the background or closed) AND an in-app message after the given delay. If the user does not respond to the check-in, the device will automatically vibrate to alert them. Call this after EVERY critical or serious response.",
+        "result": "scheduled",
+        "result_detail": null
+      }
+    ],
+    "model_lifecycle": {
+      "loads": [
+        { "event_id": 2, "model_id": "396fd72aab493022", "inferred": true }
+      ],
+      "unloads": []
+    }
+  }
+}

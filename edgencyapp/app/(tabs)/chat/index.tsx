@@ -374,6 +374,8 @@ export default function ChatScreen() {
   const { isReady: dbReady, getUser, saveSession, getSessionById } = useDatabase();
   const agentState = useAgentState();
   const { logAction, sessionId } = useIncidentLog();
+  const logActionRef = useRef(logAction);
+  logActionRef.current = logAction;
 
   // ── P2P ───────────────────────────────────────────────────────────────────
   const { config: p2pConfig, setMode: setP2PMode, setProviderKey: setP2PKey } = useP2PConfig();
@@ -587,9 +589,11 @@ export default function ChatScreen() {
     let cancelled = false;
     const isMedical = incidentType === 'medical';
     const isDelegating = p2pConfig.mode === 'consumer' && !!p2pConfig.providerPublicKey;
+    const modelDisplayName = isMedical ? 'MedPsy 1.7B Q4_K_M' : 'Gemma 4 2B Multimodal Q4_K_M';
 
     (async () => {
       try {
+        void logActionRef.current({ actionType: 'model_load_start', message: `Loading ${modelDisplayName}`, metadata: { modelName: modelDisplayName, incidentType, device: 'gpu', mode: isDelegating ? 'p2p' : 'local' } });
         setModelStatus("idle");
         setModelId(null);
         setDownloadPct(null);
@@ -638,8 +642,13 @@ export default function ChatScreen() {
         setModelId(id);
         setModelStatus("ready");
         setDownloadPct(null);
+        void logActionRef.current({ actionType: 'model_load_complete', message: `Model ready: ${modelDisplayName}`, metadata: { modelId: id, modelName: modelDisplayName, device: 'gpu', mode: isDelegating ? 'p2p' : 'local', incidentType } });
       } catch (e: any) {
-        if (!cancelled) { setModelStatus("error"); console.error("[QVAC] Init failed:", e?.message ?? String(e)); }
+        if (!cancelled) {
+          setModelStatus("error");
+          void logActionRef.current({ actionType: 'model_load_error', message: `Model load failed: ${e?.message ?? String(e)}`, metadata: { modelName: modelDisplayName, incidentType } });
+          console.error("[QVAC] Init failed:", e?.message ?? String(e));
+        }
       }
     })();
 
@@ -865,6 +874,7 @@ Return this exact shape:
         ];
 
         const allTools = [locationTool, ...agentTools] as ToolInput[];
+        void logActionRef.current({ actionType: 'inference_start', message: 'Inference started', metadata: { modelId: currentModelId, modelName: modelTypeRef.current, incidentType, promptLength: (msg.text ?? '').length, hasImage: !!attachmentPath, ragChunksCount: ragChunks.length } });
         const run = completion({
           modelId: currentModelId,
           history: qvacHistory,
@@ -895,7 +905,8 @@ Return this exact shape:
           const tool = allToolsFlat.find(t => t.name === directive.tool);
           if (tool?.handler) {
             try {
-              console.log(`tool.name: ${tool.name}, tool.description: ${tool.description}`);              
+              console.log(`tool.name: ${tool.name}, tool.description: ${tool.description}`);
+              void logActionRef.current({ actionType: 'tool_executed', message: `Tool: ${directive.tool}`, metadata: { toolName: directive.tool, args: directive.args, source: 'directive' } });
               const result = await tool.handler(directive.args);
               const note = resolveToolResultNote(directive.tool, result);
               if (note) {
@@ -910,7 +921,8 @@ Return this exact shape:
         const final = await run.final;
         for (const toolCall of final.toolCalls) {
           if (toolCall.invoke) {
-            console.log(`toolCall.id: ${toolCall.id}, toolCall.name: ${toolCall.name}, toolCall.arguments: ${JSON.stringify(toolCall.arguments)}`);            
+            console.log(`toolCall.id: ${toolCall.id}, toolCall.name: ${toolCall.name}, toolCall.arguments: ${JSON.stringify(toolCall.arguments)}`);
+            void logActionRef.current({ actionType: 'tool_executed', message: `Tool: ${toolCall.name}`, metadata: { toolName: toolCall.name, toolId: toolCall.id, args: toolCall.arguments, source: 'structured' } });
             const result = await toolCall.invoke();
             const note = resolveToolResultNote(toolCall.name, result);
             if (note) {
@@ -948,7 +960,11 @@ Return this exact shape:
           try { await onAfterResponse(accumulated); } catch (e) { console.warn('[voice] onAfterResponse error:', e); }
         }
 
-        try { const stats = await run.stats; console.log("[QVAC] Stats:", stats); } catch (_) {}
+        try {
+          const stats = await run.stats;
+          console.log("[QVAC] Stats:", stats);
+          void logActionRef.current({ actionType: 'inference_complete', message: 'Inference complete', metadata: { ...(stats as Record<string, unknown>), modelName: modelTypeRef.current, incidentType } });
+        } catch (_) {}
       } catch (e: any) {
         insertAssistantMsg();
         setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, text: "Something went wrong — please try again." } : m));
@@ -1200,6 +1216,7 @@ Return this exact shape:
     if (result.canceled || !result.assets[0]) return;
     const uri = result.assets[0].uri;
     try { setStagedImage({ uri, localPath: await resolveLocalPath(uri) }); } catch { setStagedImage({ uri, localPath: uri }); }
+    void logActionRef.current({ actionType: 'image_selected', message: 'Image selected from camera', metadata: { source: 'camera', uri } });
   }, [requestCamera]);
 
   const handleGalleryPress = useCallback(async () => {
@@ -1209,6 +1226,7 @@ Return this exact shape:
     if (result.canceled || !result.assets[0]) return;
     const uri = result.assets[0].uri;
     try { setStagedImage({ uri, localPath: await resolveLocalPath(uri) }); } catch { setStagedImage({ uri, localPath: uri }); }
+    void logActionRef.current({ actionType: 'image_selected', message: 'Image selected from gallery', metadata: { source: 'gallery', uri } });
   }, [requestLibrary]);
 
   const handleMicPressIn = useCallback(async () => {
