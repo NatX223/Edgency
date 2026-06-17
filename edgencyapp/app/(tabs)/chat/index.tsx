@@ -315,37 +315,32 @@ const INCIDENT_WORKSPACE: Record<string, string> = {
   storm:   'storm',
 };
 
-// ─── Fallback protocol when AI is unavailable ─────────────────────────────────
-function buildFallbackProtocol(incidentType: string | null, answers: Record<string, string>): ParsedProtocol {
-  const isCardiac = answers['breathing'] === 'breathing_no' || answers['conscious'] === 'conscious_no';
-  if (incidentType === 'medical' && isCardiac) {
-    return {
-      protocolName: 'Cardiac Arrest Protocol',
-      severity: 'critical',
-      triageSummary: 'Suspected cardiac arrest. Begin CPR immediately.',
-      vitalsNeeded: false,
-      totalSteps: 5,
-      steps: [
-        { instruction: 'Call emergency services (112) immediately if not already done.', checklist: null, stepActions: [{ type: 'call_number', label: '📞 Call 112', phoneNumber: '112' }], timedStep: null },
-        { instruction: 'Place the heel of your hand on the centre of the chest. Push down hard and fast — at least 5 cm depth, 100–120 compressions per minute.', checklist: ['Position hands on centre of chest', 'Interlock fingers', 'Keep arms straight'], stepActions: null, timedStep: { durationSeconds: 120, label: 'CPR Cycle — 2 minutes' } },
-        { instruction: 'After 30 compressions, tilt the head back, lift the chin, and give 2 rescue breaths if trained.', checklist: ['Tilt head back', 'Lift chin', 'Give 2 rescue breaths'], stepActions: null, timedStep: null },
-        { instruction: 'Continue CPR cycles: 30 compressions, 2 breaths. Do not stop until emergency services arrive.', checklist: null, stepActions: null, timedStep: null },
-        { instruction: 'If an AED is available, attach it as soon as possible and follow its voice prompts.', checklist: null, stepActions: null, timedStep: null },
-      ],
-    };
+// ─── Parse numbered steps from LLM free-text response ────────────────────────
+function parseStepsFromText(text: string): ParsedProtocol['steps'] {
+  const lines = text.split('\n');
+  const steps: string[] = [];
+  let current = '';
+
+  for (const line of lines) {
+    if (/^\s*(?:step\s*)?(\d+)[.):\-]\s+\S/i.test(line)) {
+      if (current.trim()) steps.push(current.trim());
+      current = line.replace(/^\s*(?:step\s*)?\d+[.):\-]\s*/i, '').trim();
+    } else if (current && line.trim()) {
+      current += ' ' + line.trim();
+    }
   }
-  return {
-    protocolName: `${incidentType ?? 'Emergency'} Response`,
-    severity: 'moderate',
-    triageSummary: 'Stay calm and follow these steps. Emergency services have been notified.',
-    vitalsNeeded: false,
-    totalSteps: 3,
-    steps: [
-      { instruction: 'Call emergency services (112) immediately and give your location.', checklist: null, stepActions: [{ type: 'call_number', label: '📞 Call 112', phoneNumber: '112' }], timedStep: null },
-      { instruction: 'Move to a safe location away from immediate danger if you can do so safely.', checklist: null, stepActions: null, timedStep: null },
-      { instruction: 'Stay on the line with emergency services and follow their instructions.', checklist: null, stepActions: null, timedStep: null },
-    ],
-  };
+  if (current.trim()) steps.push(current.trim());
+
+  if (steps.length >= 2) {
+    return steps.map(instruction => ({ instruction, checklist: null, stepActions: null, timedStep: null }));
+  }
+
+  // Fallback: bullet points or non-empty lines
+  const bullets = text.split('\n')
+    .map(l => l.replace(/^[-•*]\s*/, '').replace(/^\s*(?:step\s*)?\d+[.):\-]\s*/i, '').trim())
+    .filter(l => l.length > 15);
+
+  return bullets.slice(0, 6).map(instruction => ({ instruction, checklist: null, stepActions: null, timedStep: null }));
 }
 
 export default function ChatScreen() {
@@ -739,6 +734,177 @@ Return this exact shape:
     }
   }, []);
 
+  // ── Regular text send (mid-protocol or no-incident chat) ─────────────────
+  const appendUserMessage = useCallback(
+    async (
+      msg: Message,
+      aiContext?: string,
+      attachmentPath?: string,
+      onAfterResponse?: (text: string) => Promise<void>,
+    ) => {
+      setMessages(prev => {
+        const next = [...prev, msg];
+        messagesRef.current = next;
+        return next;
+      });
+      scrollToBottom();
+
+      if (!msg.text && !attachmentPath) return;
+
+      const userHistoryMsg: ChatMessage = {
+        id: msg.id,
+        role: "user",
+        content: msg.text?.trim() ? msg.text : "Analyze the photo",
+        ...(attachmentPath ? { attachments: [{ path: attachmentPath }] } : {}),
+      };
+
+      const nextHistory = [...historyRef.current, userHistoryMsg];
+      setHistory(nextHistory);
+      historyRef.current = nextHistory;
+
+      setIsTyping(true);
+      scrollToBottom();
+
+      const currentModelId = modelIdRef.current;
+      if (!currentModelId) {
+        setIsTyping(false);
+        appendMsg({
+          id: makeId(),
+          sender: "ai",
+          text: modelStatus === "error"
+            ? "The on-device model failed to load. Call 112 immediately for emergencies."
+            : "The model is still loading. Please try again in a moment.",
+        });
+        return;
+      }
+
+      const assistantMsgId = makeId();
+      let msgInserted = false;
+      const insertAssistantMsg = () => {
+        if (msgInserted) return;
+        msgInserted = true;
+        setMessages(prev => {
+          const next = [...prev, { id: assistantMsgId, sender: 'ai' as const, text: '' }];
+          messagesRef.current = next;
+          return next;
+        });
+        setIsTyping(false);
+        scrollToBottom();
+      };
+
+      try {
+        let ragChunks: string[] = [];
+        const shouldUseRAG = ragReady && aiContext && hasEmergencyIntent(aiContext);
+        if (shouldUseRAG) {
+          try {
+            const workspace = incidentType ? INCIDENT_WORKSPACE[incidentType] : undefined;
+            const results = await ragSearch(
+              incidentType ? `${incidentType} emergency: ${msg.text}` : msg.text!,
+              3,
+              workspace
+            );
+            ragChunks = results.map(r => r.content).filter(Boolean);
+          } catch (e) { console.warn('[RAG] search failed:', e); }
+        }
+
+        const systemPrompt = buildSystemPrompt(incidentType, userRecordRef.current, ragChunks, agentState.severity);
+        const qvacHistory = [
+          { role: 'system', content: systemPrompt },
+          { role: 'assistant', content: 'Understood. I am Edgent, your emergency response assistant.' },
+          ...nextHistory.map(m => ({
+            role:    m.role as 'user' | 'assistant',
+            content: m.content,
+            ...(m.attachments ? { attachments: [{ path: attachmentPath! }] } : {}),
+          })),
+        ];
+
+        const allTools = [locationTool, ...agentTools] as ToolInput[];
+        const run = completion({
+          modelId: currentModelId,
+          history: qvacHistory,
+          stream: true,
+          generationParams: { temp: 0.6, top_p: 0.95, top_k: 20, predict: 2048 },
+          captureThinking: true,
+          ...(modelTypeRef.current === 'general' ? { tools: allTools } : {}),
+        });
+
+        let accumulated = "";
+        for await (const event of run.events) {
+          if (event.type === "contentDelta") {
+            insertAssistantMsg();
+            accumulated += event.text;
+            const display = stripActionDirectives(accumulated);
+            setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, text: display } : m));
+          }
+        }
+        insertAssistantMsg();
+
+        const directives = parseActionDirectives(accumulated);
+        accumulated = stripActionDirectives(accumulated);
+        setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, text: accumulated } : m));
+
+        const allToolsFlat = [locationTool, ...agentToolsRef.current];
+        for (const directive of directives) {
+          const tool = allToolsFlat.find(t => t.name === directive.tool);
+          if (tool?.handler) {
+            try {
+              const result = await tool.handler(directive.args);
+              const note = resolveToolResultNote(directive.tool, result);
+              if (note) {
+                accumulated += `\n${note}`;
+                setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, text: accumulated } : m));
+              }
+            } catch (e) { console.warn(`[Tool] ${directive.tool} failed:`, e); }
+          }
+        }
+
+        const final = await run.final;
+        for (const toolCall of final.toolCalls) {
+          if (toolCall.invoke) {
+            const result = await toolCall.invoke();
+            const note = resolveToolResultNote(toolCall.name, result);
+            if (note) {
+              accumulated += `\n${note}`;
+              setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, text: accumulated } : m));
+            }
+          }
+        }
+
+        scrollToBottom();
+
+        const assistantHistoryMsg: ChatMessage = { id: assistantMsgId, role: "assistant", content: accumulated };
+        const finalHistory = [...historyRef.current, assistantHistoryMsg];
+        setHistory(finalHistory);
+        historyRef.current = finalHistory;
+
+        setMessages(prev => {
+          const next = prev.map(m => m.id === assistantMsgId ? { ...m, text: accumulated, isStreaming: false } : m);
+          messagesRef.current = next;
+          return next;
+        });
+
+        const msgsToSave = messagesRef.current.map(m => ({ ...m, isStreaming: false }));
+        try {
+          const savedId = await saveSessionRef.current({ id: sessionIdRef.current, incidentType, incidentTitle, messagesJson: JSON.stringify(msgsToSave) });
+          sessionIdRef.current = savedId;
+        } catch (e) { console.warn("[DB] Failed to save:", e); }
+
+        console.log(`chunks: ${ragChunks}, modelUsed: ${modelId}`);
+
+        if (onAfterResponse) {
+          try { await onAfterResponse(accumulated); } catch (e) { console.warn('[voice] onAfterResponse error:', e); }
+        }
+
+        try { const stats = await run.stats; console.log("[QVAC] Stats:", stats); } catch (_) {}
+      } catch (e: any) {
+        insertAssistantMsg();
+        setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, text: "Something went wrong — please try again." } : m));
+        scrollToBottom();
+      }
+    },
+    [scrollToBottom, modelStatus, ragReady, ragSearch, incidentType, agentState.severity, appendMsg]
+  );
+
   // ── Handle agent card selection ───────────────────────────────────────────
   const handleAgentCardSelect = useCallback(async (cardId: string, value: string) => {
     if (!incidentType) return;
@@ -758,61 +924,46 @@ Return this exact shape:
       lastAgentCardIdRef.current = nextId;
       appendMsg({ id: nextId, sender: 'ai', type: 'agent_card', agentCardProps: nextQ });
     } else {
-      // All questions answered — trigger parseProtocol
+      // All questions answered — send Q&A to LLM, parse response into step cards
       if (parsingRef.current) return;
       parsingRef.current = true;
 
       const allAnswers = { ...agentState.assessmentAnswers, [cardId]: value };
 
-      // Show a status message while waiting / generating
-      const modelReady = Boolean(modelIdRef.current);
-      const waitMsgId = makeId();
-      appendMsg({
-        id: waitMsgId,
-        sender: 'ai',
-        text: modelReady
-          ? 'Analyzing your situation…'
-          : 'Assessment complete. Waiting for AI model to finish loading before generating your protocol…',
+      // Build readable Q&A text from question labels + selected answer labels
+      const qaLines = questions.map((q, i) => {
+        const answerValue = Object.values(allAnswers)[i];
+        const answerLabel = q.options.find(o => o.value === answerValue)?.label ?? answerValue;
+        return `${q.question}: ${answerLabel}`;
       });
-      setIsTyping(true);
-      scrollToBottom();
+      const qaText = `${incidentType} emergency. Assessment: ${qaLines.join(', ')}. What are the emergency response steps?`;
 
-      // RAG is intentionally skipped here: loading the GTE embeddings model
-      // while the LLM is already in GPU memory causes an OOM crash on device.
-      let protocol: ParsedProtocol | null = null;
+      const userMsg: Message = { id: makeId(), sender: 'user', text: qaText };
 
-      protocol = await parseProtocol([], incidentType, allAnswers);
+      appendUserMessage(userMsg, qaText, undefined, async (responseText: string) => {
+        parsingRef.current = false;
 
-      // Fallback if AI failed or timed out
-      if (!protocol) {
-        protocol = buildFallbackProtocol(incidentType, allAnswers);
-      }
+        const steps = parseStepsFromText(responseText);
+        if (steps.length === 0) return;
 
-      // Remove the waiting message
-      setMessages(prev => {
-        const next = prev.filter(m => m.id !== waitMsgId);
-        messagesRef.current = next;
-        return next;
-      });
+        const protocol: ParsedProtocol = {
+          protocolName: `${incidentTitle ?? incidentType} Protocol`,
+          severity: 'moderate',
+          triageSummary: '',
+          vitalsNeeded: false,
+          totalSteps: steps.length,
+          steps,
+        };
 
-      setIsTyping(false);
-      parsingRef.current = false;
-
-      pendingProtocolRef.current = protocol;
-      agentState.setTriaged(protocol.severity);
-
-      appendMsg({
-        id: makeId(),
-        sender: 'ai',
-        type: 'triage_assessment',
-        triageProps: {
-          severity: protocol.severity,
-          summary: protocol.triageSummary,
-          protocolName: protocol.protocolName,
-        },
+        pendingProtocolRef.current = protocol;
+        agentState.setTriaged('moderate');
+        agentState.startProtocol(protocol.protocolName, protocol.totalSteps);
+        protocolStepsRef.current = protocol.steps;
+        currentStepIndexRef.current = 0;
+        appendFirstStep(protocol);
       });
     }
-  }, [incidentType, agentState, appendMsg, updateMsg, parseProtocol, ragReady, ragSearch, scrollToBottom]);
+  }, [incidentType, incidentTitle, agentState, appendMsg, updateMsg, appendUserMessage, scrollToBottom]);
 
   // ── Handle "Start Protocol" tap on TriageAssessmentMessage ────────────────
   const handleStartProtocol = useCallback(() => {
@@ -939,176 +1090,6 @@ Return this exact shape:
     const protocol = pendingProtocolRef.current;
     if (protocol) appendNextStep(nextIdx, protocol);
   }, [updateMsg]);
-
-  // ── Regular text send (mid-protocol or no-incident chat) ─────────────────
-  const appendUserMessage = useCallback(
-    async (
-      msg: Message,
-      aiContext?: string,
-      attachmentPath?: string,
-      onAfterResponse?: (text: string) => Promise<void>,
-    ) => {
-      setMessages(prev => {
-        const next = [...prev, msg];
-        messagesRef.current = next;
-        return next;
-      });
-      scrollToBottom();
-
-      if (!msg.text && !attachmentPath) return;
-
-      const userHistoryMsg: ChatMessage = {
-        id: msg.id,
-        role: "user",
-        content: msg.text?.trim() ? msg.text : "Analyze the photo",
-        ...(attachmentPath ? { attachments: [{ path: attachmentPath }] } : {}),
-      };
-
-      const nextHistory = [...historyRef.current, userHistoryMsg];
-      setHistory(nextHistory);
-      historyRef.current = nextHistory;
-
-      setIsTyping(true);
-      scrollToBottom();
-
-      const currentModelId = modelIdRef.current;
-      if (!currentModelId) {
-        setIsTyping(false);
-        appendMsg({
-          id: makeId(),
-          sender: "ai",
-          text: modelStatus === "error"
-            ? "The on-device model failed to load. Call 112 immediately for emergencies."
-            : "The model is still loading. Please try again in a moment.",
-        });
-        return;
-      }
-
-      const assistantMsgId = makeId();
-      setMessages(prev => {
-        const next = [...prev, { id: assistantMsgId, sender: 'ai' as const, text: '' }];
-        messagesRef.current = next;
-        return next;
-      });
-      setIsTyping(false);
-      scrollToBottom();
-
-      try {
-        let ragChunks: string[] = [];
-        const shouldUseRAG = ragReady && aiContext && hasEmergencyIntent(aiContext);
-        if (shouldUseRAG) {
-          try {
-            const workspace = incidentType ? INCIDENT_WORKSPACE[incidentType] : undefined;
-            const results = await ragSearch(
-              incidentType ? `${incidentType} emergency: ${msg.text}` : msg.text!,
-              3,
-              workspace
-            );
-            ragChunks = results.map(r => r.content).filter(Boolean);
-            
-          } catch (e) { console.warn('[RAG] search failed:', e); }
-        }
-
-        const systemPrompt = buildSystemPrompt(incidentType, userRecordRef.current, ragChunks, agentState.severity);
-        const qvacHistory = [
-          { role: 'system', content: systemPrompt },
-          { role: 'assistant', content: 'Understood. I am Edgent, your emergency response assistant.' },
-          ...nextHistory.map(m => ({
-            role:    m.role as 'user' | 'assistant',
-            content: m.content,
-            ...(m.attachments ? { attachments: [{ path: attachmentPath! }] } : {}),
-          })),
-        ];
-
-        const allTools = [locationTool, ...agentTools] as ToolInput[];
-        const run = completion({
-          modelId: currentModelId,
-          history: qvacHistory,
-          stream: true,
-          generationParams: { temp: 0.6, top_p: 0.95, top_k: 20, predict: 2048 },
-          captureThinking: true,
-          ...(modelTypeRef.current === 'general' ? { tools: allTools } : {}),
-        });
-
-        let accumulated = "";
-        for await (const event of run.events) {
-          if (event.type === "contentDelta") {
-            accumulated += event.text;
-            // Stream clean text — hide ACTION: lines while they build up
-            const display = stripActionDirectives(accumulated);
-            setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, text: display } : m));
-          }
-        }
-
-        // ── Text-based tool dispatch ────────────────────────────────────────
-        // Parse ACTION: directives the model appended, strip them from the
-        // displayed message, then invoke the matching handler directly.
-        const directives = parseActionDirectives(accumulated);
-        accumulated = stripActionDirectives(accumulated);
-        setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, text: accumulated } : m));
-
-        const allToolsFlat = [locationTool, ...agentToolsRef.current];
-        for (const directive of directives) {
-          const tool = allToolsFlat.find(t => t.name === directive.tool);
-          if (tool?.handler) {
-            try {
-              const result = await tool.handler(directive.args);
-              const note = resolveToolResultNote(directive.tool, result);
-              if (note) {
-                accumulated += `\n${note}`;
-                setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, text: accumulated } : m));
-              }
-            } catch (e) { console.warn(`[Tool] ${directive.tool} failed:`, e); }
-          }
-        }
-
-        // ── SDK-level tool calls (bonus path for capable models) ────────────
-        const final = await run.final;
-        for (const toolCall of final.toolCalls) {
-          if (toolCall.invoke) {
-            const result = await toolCall.invoke();
-            const note = resolveToolResultNote(toolCall.name, result);
-            if (note) {
-              accumulated += `\n${note}`;
-              setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, text: accumulated } : m));
-            }
-          }
-        }
-
-        scrollToBottom();
-
-        const assistantHistoryMsg: ChatMessage = { id: assistantMsgId, role: "assistant", content: accumulated };
-        const finalHistory = [...historyRef.current, assistantHistoryMsg];
-        setHistory(finalHistory);
-        historyRef.current = finalHistory;
-
-        setMessages(prev => {
-          const next = prev.map(m => m.id === assistantMsgId ? { ...m, text: accumulated, isStreaming: false } : m);
-          messagesRef.current = next;
-          return next;
-        });
-
-        const msgsToSave = messagesRef.current.map(m => ({ ...m, isStreaming: false }));
-        try {
-          const savedId = await saveSessionRef.current({ id: sessionIdRef.current, incidentType, incidentTitle, messagesJson: JSON.stringify(msgsToSave) });
-          sessionIdRef.current = savedId;
-        } catch (e) { console.warn("[DB] Failed to save:", e); }
-
-        console.log(`chunks: ${ragChunks}, modelUsed: ${modelId}`);
-
-        // Voice callback — synthesize TTS after LLM response is final
-        if (onAfterResponse) {
-          try { await onAfterResponse(accumulated); } catch (e) { console.warn('[voice] onAfterResponse error:', e); }
-        }
-
-        try { const stats = await run.stats; console.log("[QVAC] Stats:", stats); } catch (_) {}
-      } catch (e: any) {
-        setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, text: "Something went wrong — please try again." } : m));
-        scrollToBottom();
-      }
-    },
-    [scrollToBottom, modelStatus, ragReady, ragSearch, incidentType, agentState.severity, appendMsg]
-  );
 
   // ── Save on blur ──────────────────────────────────────────────────────────
   useFocusEffect(
