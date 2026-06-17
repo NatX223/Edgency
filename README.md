@@ -696,11 +696,11 @@ All demo recordings were captured on the following devices. Replace placeholder 
 
 | Home Screen | Incident Triage | AI Response |
 |:-----------:|:---------------:|:-----------:|
-| ![Home Screen](screenshots/home-screen.png) | ![Earthquake Triage](screenshots/earthquake-triage.png) | ![AI Guidance](screenshots/ai-guidance.png) |
+| ![Home Screen](home-screen.png) | ![Earthquake Triage](earthquake-triage.png) | ![AI Guidance](ai-guidance.png) |
 
 | Protocol Steps | Protocol Complete | P2P Inference | User Profile |
 |:--------------:|:-----------------:|:-------------:|:------------:|
-| ![Protocol Steps](screenshots/protocol-steps.png) | ![Protocol Complete](screenshots/protocol-complete.png) | ![P2P Inference](screenshots/p2p-inference.png) | ![User Profile](screenshots/user-profile.png) |
+| ![Protocol Steps](protocol-steps.png) | ![Protocol Complete](protocol-complete.png) | ![P2P Inference](p2p-inference.png) | ![User Profile](user-profile.png) |
 
 ---
 
