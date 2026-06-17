@@ -86,6 +86,26 @@ function resolveToolResultNote(toolName: string, result: any): string | null {
   }
 }
 
+// ─── Text-based tool dispatch helpers ────────────────────────────────────────
+// Small on-device models can't emit structured tool-call JSON reliably.
+// We instruct the model to append ACTION: lines and parse them ourselves.
+function parseActionDirectives(text: string): Array<{ tool: string; args: Record<string, unknown> }> {
+  const out: Array<{ tool: string; args: Record<string, unknown> }> = [];
+  for (const match of text.matchAll(/^ACTION:(\{.+\})$/gm)) {
+    try {
+      const parsed = JSON.parse(match[1]);
+      if (parsed?.tool && parsed.tool !== 'none') {
+        out.push({ tool: parsed.tool, args: parsed.args ?? {} });
+      }
+    } catch (_) {}
+  }
+  return out;
+}
+
+function stripActionDirectives(text: string): string {
+  return text.replace(/\nACTION:\{[^\n]+\}/g, '').replace(/^ACTION:\{[^\n]+\}$/gm, '').trim();
+}
+
 // ─── Per-incident assessment questions ───────────────────────────────────────
 const ASSESSMENT_QUESTIONS: Record<string, AgentCardData[]> = {
   medical: [
@@ -219,11 +239,20 @@ function buildSystemPrompt(
     });
   }
 
-  lines.push('\n## Autonomous Tools — use proactively, do NOT wait to be asked');
-  lines.push('- **send_emergency_report**: Call immediately when the user is trapped, bleeding severely, unconscious, or needs external rescue. Gather their profile + location and open the SMS composer to 112 or their emergency contact.');
-  lines.push('- **schedule_checkin**: Call after EVERY serious response. Use 60–120 s for critical situations, 180–300 s for stable-but-monitored. If the user stops responding the device will auto-alert them.');
-  lines.push('- **alert_user**: Call when the scheduled check-in went unanswered. Use "moderate" for no response; "urgent" if you suspect unconsciousness.');
-  lines.push('- **get_user_location**: Call when precise coordinates would aid evacuation or emergency dispatch.');
+  lines.push('\n## TOOL DISPATCH — append an ACTION line at the end of EVERY reply, no exceptions');
+  lines.push('Exact format (raw text, no markdown):');
+  lines.push('ACTION:{"tool":"TOOL_NAME","args":{...}}');
+  lines.push('No action needed? Still write: ACTION:{"tool":"none"}');
+  lines.push('');
+  lines.push('send_emergency_report — user is trapped / bleeding / needs external rescue:');
+  lines.push('  ACTION:{"tool":"send_emergency_report","args":{"condition":"<observed condition>","recipient":"emergency_services"}}');
+  lines.push('schedule_checkin — append after EVERY serious or critical response:');
+  lines.push('  ACTION:{"tool":"schedule_checkin","args":{"delay_seconds":90,"message":"Still with me? Tap or type to confirm."}}');
+  lines.push('alert_user — user stopped responding after a check-in:');
+  lines.push('  ACTION:{"tool":"alert_user","args":{"intensity":"urgent"}}');
+  lines.push('get_user_location — need GPS for dispatch or evacuation:');
+  lines.push('  ACTION:{"tool":"get_user_location","args":{"name":"user"}}');
+  lines.push('You may output multiple ACTION lines. You MUST output at least one.');
 
   return lines.join("\n");
 }
@@ -265,11 +294,14 @@ async function resolveLocalPath(uri: string): Promise<string> {
 }
 
 // ─── Emergency intent detection ──────────────────────────────────────────────
-const EMERGENCY_PATTERN = /\b(emergency|accident|injury|injured|hurt|pain|bleed|blood|unconscious|unresponsive|breathing|seizure|stroke|heart|cardiac|cpr|choking|drowning|burn|fracture|broken|wound|fire|earthquake|flood|storm|lightning|tsunami|landslide|trapped|evacuate|evacuation|collapse|danger|rescue|ambulance|hospital|doctor|nurse|help|sos|critical|severe|dead|dying|faint|dizzy|allergic|overdose|poisoning|electric|shock|threat|attack|disaster|crisis)\b/i;
+const EMERGENCY_PATTERN = /\b(emergency|accident|injury|injured|hurt|pain|bleed|blood|unconscious|unresponsive|breathing|seizure|stroke|heart|cardiac|cpr|choking|drowning|burn|fracture|broken|wound|fire|earthquake|flood|storm|lightning|tsunami|landslide|stuck|rubble|trapped|evacuate|evacuation|collapse|danger|rescue|ambulance|hospital|doctor|nurse|help|sos|critical|severe|dead|dying|faint|dizzy|allergic|overdose|poisoning|electric|shock|threat|attack|disaster|crisis)\b/i;
 
 function hasEmergencyIntent(text: string): boolean {
   return EMERGENCY_PATTERN.test(text);
 }
+
+// Narrower pattern: user is personally in immediate physical danger right now
+const CRITICAL_SELF_DANGER_PATTERN = /\b(stuck|trapped|can'?t move|cannot move|buried|pinned|rubble|debris|bleed|bleeding|blood|can'?t breathe|cannot breathe|drowning|unconscious|dying|help me|save me|sos|can'?t get out|cannot get out)\b/i;
 
 // Maps incident type to its dedicated RAG workspace so searches never
 // pull chunks from unrelated domains (e.g. lightning into medical chat).
@@ -394,6 +426,10 @@ export default function ChatScreen() {
   const currentStepIndexRef = useRef(0);
   // Whether we're waiting for parseProtocol (suppress redundant calls)
   const parsingRef = useRef(false);
+  // Prevent duplicate auto-triggered emergency reports within one session
+  const hasAutoReportedRef = useRef(false);
+  // Stable ref so handleSend can always reach the latest agentTools without a stale closure
+  const agentToolsRef = useRef<ToolInput[]>([]);
 
   // ── Reset when incident type changes ──────────────────────────────────────
   const prevIncidentTypeRef = useRef<string | null | undefined>(undefined);
@@ -416,6 +452,7 @@ export default function ChatScreen() {
     protocolStepsRef.current   = [];
     currentStepIndexRef.current = 0;
     parsingRef.current = false;
+    hasAutoReportedRef.current = false;
     agentState.reset();
   }, [incidentType]);
 
@@ -602,6 +639,7 @@ export default function ChatScreen() {
 
   // ── Agent tools (location + emergency report + check-in + alert) ─────────
   const agentTools = useAgentTools({ getUser, onCheckinScheduled: handleCheckinScheduled });
+  agentToolsRef.current = agentTools;
 
   // ── parseProtocol — structured AI call to get the emergency protocol ──────
   const parseProtocol = useCallback(async (
@@ -947,21 +985,42 @@ Return this exact shape:
 
         let accumulated = "";
         for await (const event of run.events) {
-          console.log(event.type);
-
           if (event.type === "contentDelta") {
             accumulated += event.text;
-            setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, text: accumulated } : m));
+            // Stream clean text — hide ACTION: lines while they build up
+            const display = stripActionDirectives(accumulated);
+            setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, text: display } : m));
           }
         }
 
+        // ── Text-based tool dispatch ────────────────────────────────────────
+        // Parse ACTION: directives the model appended, strip them from the
+        // displayed message, then invoke the matching handler directly.
+        const directives = parseActionDirectives(accumulated);
+        accumulated = stripActionDirectives(accumulated);
+        setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, text: accumulated } : m));
+
+        const allToolsFlat = [locationTool, ...agentToolsRef.current];
+        for (const directive of directives) {
+          const tool = allToolsFlat.find(t => t.name === directive.tool);
+          if (tool?.handler) {
+            try {
+              const result = await tool.handler(directive.args);
+              const note = resolveToolResultNote(directive.tool, result);
+              if (note) {
+                accumulated += `\n${note}`;
+                setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, text: accumulated } : m));
+              }
+            } catch (e) { console.warn(`[Tool] ${directive.tool} failed:`, e); }
+          }
+        }
+
+        // ── SDK-level tool calls (bonus path for capable models) ────────────
         const final = await run.final;
         for (const toolCall of final.toolCalls) {
           if (toolCall.invoke) {
             const result = await toolCall.invoke();
-            // Translate tool results into readable notes instead of raw JSON
             const note = resolveToolResultNote(toolCall.name, result);
-            console.log(`[Tool] ${toolCall.name} result:`, result, note);
             if (note) {
               accumulated += `\n${note}`;
               setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, text: accumulated } : m));
@@ -1018,10 +1077,34 @@ Return this exact shape:
     // User is active — cancel any pending check-in / alert timers
     lastUserActivityRef.current = Date.now();
     clearCheckinTimers();
+
+    // ── App-level emergency dispatch ──────────────────────────────────────────
+    // Small on-device models often describe tool calls in text rather than
+    // emitting structured tool-call JSON. We detect critical intent directly
+    // and invoke the handlers ourselves so tools fire reliably every time.
+    if (text && incidentType && !hasAutoReportedRef.current && CRITICAL_SELF_DANGER_PATTERN.test(text)) {
+      hasAutoReportedRef.current = true;
+      const tools = agentToolsRef.current;
+
+      const reportTool = tools.find(t => t.name === 'send_emergency_report');
+      reportTool?.handler?.({ condition: text, recipient: 'emergency_services' })
+        .then(result => {
+          const note = resolveToolResultNote('send_emergency_report', result);
+          if (note) appendMsg({ id: makeId(), sender: 'ai', text: note });
+        })
+        .catch(() => {});
+
+      const checkinTool = tools.find(t => t.name === 'schedule_checkin');
+      checkinTool?.handler?.({
+        delay_seconds: 120,
+        message: "Still with me? Tap here or type anything to confirm you're okay.",
+      }).catch(() => {});
+    }
+
     const msg: Message = { id: makeId(), sender: 'user', text: text || undefined, imageUri: staged?.uri, imageCaption: text ? undefined : 'Image' };
     appendUserMessage(msg, text || undefined, staged?.localPath);
     setStagedImage(null);
-  }, [appendUserMessage, clearCheckinTimers]);
+  }, [appendUserMessage, clearCheckinTimers, incidentType, appendMsg]);
 
   // ── Camera / gallery / mic ────────────────────────────────────────────────
   const handleCameraPress = useCallback(async () => {
