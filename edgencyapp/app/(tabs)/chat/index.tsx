@@ -76,7 +76,10 @@ function makeId() {
 }
 
 function resolveToolResultNote(toolName: string, result: any): string | null {
-  if (result?.error) return `⚠️ ${result.error}`;
+  if (result?.error) {
+    console.warn(`[Tool:${toolName}]`, result.error);
+    return null;
+  }
   switch (toolName) {
     case 'get_user_location':
       return result?.address
@@ -108,8 +111,14 @@ function parseActionDirectives(text: string): Array<{ tool: string; args: Record
   return out;
 }
 
+const TOOL_CALL_TEXT_RE = /\b(?:schedule_checkin|get_user_location|send_emergency_report|alert_user):\s*\n?\s*\{[^]*?\}\s*/g;
+
 function stripActionDirectives(text: string): string {
-  return text.replace(/\nACTION:\{[^\n]+\}/g, '').replace(/^ACTION:\{[^\n]+\}$/gm, '').trim();
+  return text
+    .replace(/\nACTION:\{[^\n]+\}/g, '')
+    .replace(/^ACTION:\{[^\n]+\}$/gm, '')
+    .replace(TOOL_CALL_TEXT_RE, '')
+    .trim();
 }
 
 // ─── Per-incident assessment questions ───────────────────────────────────────
@@ -279,10 +288,15 @@ const locationTool = {
       if (status !== "granted") return { error: "Location permission denied." };
       const position = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
       const { latitude, longitude } = position.coords;
-      const [geo] = await Location.reverseGeocodeAsync({ latitude, longitude });
-      const address = geo
-        ? [geo.streetNumber, geo.street, geo.district, geo.city, geo.region].filter(Boolean).join(", ")
-        : "Address unavailable";
+      let address = "Address unavailable";
+      try {
+        const [geo] = await Location.reverseGeocodeAsync({ latitude, longitude });
+        if (geo) {
+          address = [geo.streetNumber, geo.street, geo.district, geo.city, geo.region].filter(Boolean).join(", ") || "Address unavailable";
+        }
+      } catch (_) {
+        console.warn("[Location] reverseGeocodeAsync unavailable, returning coordinates only");
+      }
       return { latitude, longitude, address };
     } catch (e: any) {
       return { error: `Location lookup failed: ${e?.message ?? String(e)}` };

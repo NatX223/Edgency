@@ -167,7 +167,7 @@ function ResponderPortal() {
 
       {/* Go On-Duty CTA */}
       <TouchableOpacity style={rp.dutyBtn} activeOpacity={0.8}>
-        <Text style={rp.dutyText}>Search and Rescue</Text>
+        <Text style={rp.dutyText}>Custom Emergency</Text>
       </TouchableOpacity>
     </View>
   );
