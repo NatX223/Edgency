@@ -82,6 +82,40 @@ A semantic RAG layer retrieves the most relevant protocol chunks and injects the
 
 ---
 
+### Orchestration Reference
+
+#### Model & RAG Routing
+
+| Incident Type | Inference Model | Quantisation | RAG Workspace | Protocol Chunks | Tool Calling Mode |
+|---|---|---|---|---|---|
+| Medical | MedPsy 1.7B | Q4\_K\_M | `medical` | 68 | Text-directive parsing (`ACTION:` lines) |
+| Earthquake | Gemma 4 2B Multimodal | Q4\_K\_M | `general` | 34 | Native structured tool calls (QVAC) |
+| Flood / Tsunami | Gemma 4 2B Multimodal | Q4\_K\_M | `water` | 29 | Native structured tool calls (QVAC) |
+| Storm | Gemma 4 2B Multimodal | Q4\_K\_M | `storm` | 17 | Native structured tool calls (QVAC) |
+
+#### Supporting Models
+
+| Model | QVAC Constant | Quantisation | Approx. Size | Runtime | Role |
+|---|---|---|---|---|---|
+| CLIP Projection (Gemma 4 vision) | `MMPROJ_GEMMA4_2B_MULTIMODAL_F16` | FP16 | — | GPU (co-loaded with LLM) | Projects image patch embeddings into Gemma 4's token space, enabling multimodal inputs (photos / video frames) |
+| Whisper Tiny | `WHISPER_TINY_Q8_0` | Q8\_0 | ~43 MB | CPU | On-device ASR — transcribes voice messages to text before they are passed to the LLM |
+| Supertonic TTS | `TTS_EN_SUPERTONIC_Q4_0` | Q4\_0 | ~132 MB | CPU | On-device TTS — synthesises the LLM's text response to 44.1 kHz mono PCM, encoded to WAV and played back as an AI voice bubble |
+
+> **Why CPU for ASR and TTS?** Both models run on CPU so the LLM can keep the full GPU memory budget. The LLM is the latency-critical path; Whisper Tiny and Supertonic are small enough that CPU inference does not noticeably delay the voice pipeline.
+
+> **Why two tool-calling modes?** MedPsy 1.7B is too small to emit reliable structured JSON. The system prompt instructs it to append plain `ACTION:{...}` lines which are stripped from the displayed response and parsed separately. Gemma 4 uses the native QVAC tool-call API (`tools: true` in `loadModel`) and returns structured function calls directly.
+
+#### Agent Tools
+
+| Tool | When the Model Calls It | What It Does | User-Visible Output |
+|---|---|---|---|
+| `get_user_location` | GPS coordinates are needed for dispatch routing or evacuation directions | Requests foreground location permission, queries `expo-location` for current coordinates, reverse-geocodes to a human-readable address, returns a Google Maps link | Address injected into model context; short note shown in chat |
+| `send_emergency_report` | User is trapped, bleeding severely, unconscious, or needs external rescue — called automatically without waiting to be asked | Compiles the user's full name, observed condition, GPS coordinates, medical history, known conditions, and disabilities into a pre-formatted SMS; opens the device SMS composer pre-filled to **112** (emergency services) or the user's saved emergency contact | "✓ Emergency report sent to 112" confirmation appended to the AI response |
+| `schedule_checkin` | After every critical or serious response | Schedules a **push notification** (fires even when the app is backgrounded or closed) and an in-app follow-up message after a configurable delay (30–600 s). If the user does not respond within a further 90 s, automatically chains into `alert_user` | Notification delivered at the scheduled time; check-in message appears in chat |
+| `alert_user` | User has not responded to the scheduled check-in | **`urgent`** — SOS Morse vibration pattern (···---···) plus 5 rapid heavy haptic strikes. **`moderate`** — 3 spaced heavy pulses | Device vibrates physically to alert an unresponsive user; warning message appended to chat |
+
+---
+
 ## Technologies Used
 
 | Technology | Purpose |

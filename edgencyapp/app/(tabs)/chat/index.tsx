@@ -447,6 +447,7 @@ export default function ChatScreen() {
 
     voiceModels.transcribeAudio(pending.uri)
       .then(transcribedText => {
+        console.log(`[voice] transcription (pending): "${transcribedText}", audioUri: ${pending.uri}, durationMs: ${pending.durationMs}`);
         if (!transcribedText) { appendUserMessage(userVoiceMsg); return; }
         return appendUserMessage(
           userVoiceMsg,
@@ -456,6 +457,7 @@ export default function ChatScreen() {
             const cleanText = stripActionDirectives(responseText).trim();
             if (!cleanText) return;
             const { uri: wavUri, durationMs } = await voiceModels.synthesizeSpeech(cleanText);
+            console.log(`[voice] tts (pending): durationMs: ${durationMs}, wavUri: ${wavUri}, inputText: "${cleanText}"`);
             appendMsg({ id: makeId(), sender: 'ai', audioUri: wavUri, audioDurationMs: durationMs });
             await Audio.setAudioModeAsync({ allowsRecordingIOS: false, playsInSilentModeIOS: true });
             const { sound } = await Audio.Sound.createAsync({ uri: wavUri }, { shouldPlay: true });
@@ -763,6 +765,7 @@ Return this exact shape:
 
       let json = '';
       for await (const event of run.events) {
+        console.log(event.type);        
         if (event.type === 'contentDelta') json += event.text;
       }
 
@@ -792,6 +795,7 @@ Return this exact shape:
       scrollToBottom();
 
       if (!msg.text && !attachmentPath) return;
+      console.log(`prompt: ${msg.text}`);      
 
       const userHistoryMsg: ChatMessage = {
         id: msg.id,
@@ -872,6 +876,7 @@ Return this exact shape:
 
         let accumulated = "";
         for await (const event of run.events) {
+          console.log(event.type);
           if (event.type === "contentDelta") {
             insertAssistantMsg();
             accumulated += event.text;
@@ -935,6 +940,8 @@ Return this exact shape:
           sessionIdRef.current = savedId;
         } catch (e) { console.warn("[DB] Failed to save:", e); }
 
+        console.log(`response: ${accumulated}`);
+        
         console.log(`chunks: ${ragChunks}, modelUsed: ${modelId}`);
 
         if (onAfterResponse) {
@@ -1232,6 +1239,7 @@ Return this exact shape:
     let transcribedText = '';
     try {
       transcribedText = await voiceModels.transcribeAudio(result.uri);
+      console.log(`[voice] transcription: "${transcribedText}", audioUri: ${result.uri}, durationMs: ${result.durationMs}`);
     } catch (e) {
       console.warn('[voice] transcription failed:', e);
     }
@@ -1252,6 +1260,7 @@ Return this exact shape:
         if (!cleanText) return;
         try {
           const { uri: wavUri, durationMs } = await voiceModels.synthesizeSpeech(cleanText);
+          console.log(`[voice] tts: durationMs: ${durationMs}, wavUri: ${wavUri}, inputText: "${cleanText}"`);
           appendMsg({ id: makeId(), sender: 'ai', audioUri: wavUri, audioDurationMs: durationMs });
 
           // Auto-play the AI voice response
