@@ -9,6 +9,8 @@ interface AgentStatusBarProps {
   currentStep?: number;
   totalSteps?: number;
   onBack: () => void;
+  p2pBadge?: string;
+  onP2PPress?: () => void;
 }
 
 function dotColor(state: AgentState): string {
@@ -32,6 +34,8 @@ export function AgentStatusBar({
   currentStep = 0,
   totalSteps = 0,
   onBack,
+  p2pBadge,
+  onP2PPress,
 }: AgentStatusBarProps) {
   const dotOpacity = useRef(new Animated.Value(1)).current;
   const progressAnim = useRef(new Animated.Value(0)).current;
@@ -87,6 +91,23 @@ export function AgentStatusBar({
           </View>
         )}
       </View>
+
+      {onP2PPress && (
+        <TouchableOpacity
+          style={styles.p2pBtn}
+          onPress={onP2PPress}
+          activeOpacity={0.7}
+          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+        >
+          {p2pBadge ? (
+            <View style={styles.p2pBadge}>
+              <Text style={styles.p2pBadgeText}>{p2pBadge}</Text>
+            </View>
+          ) : (
+            <Text style={styles.p2pIcon}>P2P</Text>
+          )}
+        </TouchableOpacity>
+      )}
     </View>
   );
 }
@@ -114,4 +135,9 @@ const styles = StyleSheet.create({
 
   progressTrack: { height: 3, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: Radii.full, overflow: 'hidden' },
   progressFill:  { height: '100%', backgroundColor: Colors.primaryContainer, borderRadius: Radii.full },
+
+  p2pBtn:       { padding: 6, borderRadius: Radii.sm },
+  p2pBadge:     { backgroundColor: Colors.tertiaryContainer, paddingHorizontal: 7, paddingVertical: 3, borderRadius: Radii.full },
+  p2pBadgeText: { ...Typography.labelSm, color: Colors.onTertiaryContainer, fontSize: 10 },
+  p2pIcon:      { ...Typography.labelSm, color: Colors.onSurfaceVariant, fontSize: 10 },
 });

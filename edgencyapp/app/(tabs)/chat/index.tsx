@@ -62,6 +62,9 @@ import {
   unloadModel,
   VERBOSITY
 } from "@qvac/sdk";
+import { useP2PConfig } from "@/hooks/useP2PConfig";
+import { useP2PProvider } from "@/hooks/useP2PProvider";
+import { P2PSetupSheet } from "@/components/p2p/P2PSetupSheet";
 
 // ─── QVAC types ──────────────────────────────────────────────────────────────
 type Role = "user" | "assistant";
@@ -358,6 +361,11 @@ export default function ChatScreen() {
   const agentState = useAgentState();
   const { logAction, sessionId } = useIncidentLog();
 
+  // ── P2P ───────────────────────────────────────────────────────────────────
+  const { config: p2pConfig, setMode: setP2PMode, setProviderKey: setP2PKey } = useP2PConfig();
+  const p2pProvider = useP2PProvider();
+  const [p2pSheetVisible, setP2PSheetVisible] = useState(false);
+
   const [userRecord, setUserRecord] = useState<UserRecord | null>(null);
   const userRecordRef = useRef<UserRecord | null>(null);
 
@@ -559,34 +567,54 @@ export default function ChatScreen() {
   const MEDPSY_URL = 'https://huggingface.co/buckets/NatXeth/MedPsy-1.7B-GGUF-bucket/resolve/medpsy-1.7b-q4_k_m-imat.gguf?download=true';
 
   useEffect(() => {
+    if (!p2pConfig.isLoaded) return; // wait until AsyncStorage config is read
     let cancelled = false;
     const isMedical = incidentType === 'medical';
+    const isDelegating = p2pConfig.mode === 'consumer' && !!p2pConfig.providerPublicKey;
 
     (async () => {
       try {
         setModelStatus("idle");
         setModelId(null);
         setDownloadPct(null);
-        setModelStatus("downloading");
-
-        if (isMedical) {
-          await downloadAsset({ assetSrc: MEDPSY_URL, onProgress: (p: ModelProgressUpdate) => { if (!cancelled) setDownloadPct(Math.round(p.percentage)); } });
-        } else {
-          await downloadAsset({ assetSrc: GEMMA4_2B_MULTIMODAL_Q4_K_M, onProgress: (p: ModelProgressUpdate) => { if (!cancelled) setDownloadPct(Math.round(p.percentage)); } });
-          await downloadAsset({ assetSrc: MMPROJ_GEMMA4_2B_MULTIMODAL_F16, onProgress: (p: ModelProgressUpdate) => { if (!cancelled) setDownloadPct(Math.round(p.percentage)); } });
-        }
-
-        if (cancelled) return;
-        setModelStatus("loading");
-        setDownloadPct(null);
 
         let id: string;
-        if (isMedical) {
-          id = await loadModel({ modelSrc: MEDPSY_URL, modelType: "llamacpp-completion", modelConfig: { device: "gpu", ctx_size: 4096, verbosity: VERBOSITY.ERROR }, onProgress: (p: ModelProgressUpdate) => { if (!cancelled) setDownloadPct(Math.round(p.percentage)); } });
-          modelTypeRef.current = 'medical';
+
+        if (isDelegating) {
+          // ── Delegate mode: skip local download, route inference to peer ──
+          setModelStatus("loading");
+          const modelSrc = isMedical ? MEDPSY_URL : GEMMA4_2B_MULTIMODAL_Q4_K_M;
+          id = await loadModel({
+            modelSrc,
+            modelType: "llamacpp-completion",
+            delegate: {
+              providerPublicKey: p2pConfig.providerPublicKey!,
+              timeout: 60_000,
+            },
+          } as any);
+          modelTypeRef.current = isMedical ? 'medical' : 'general';
         } else {
-          id = await loadModel({ modelSrc: GEMMA4_2B_MULTIMODAL_Q4_K_M, modelType: "llamacpp-completion", modelConfig: { device: "gpu", ctx_size: 4096, verbosity: VERBOSITY.ERROR, tools: true, projectionModelSrc: MMPROJ_GEMMA4_2B_MULTIMODAL_F16 }, onProgress: (p: ModelProgressUpdate) => { if (!cancelled) setDownloadPct(Math.round(p.percentage)); } });
-          modelTypeRef.current = 'general';
+          // ── Local mode: download then load on-device ──────────────────────
+          setModelStatus("downloading");
+
+          if (isMedical) {
+            await downloadAsset({ assetSrc: MEDPSY_URL, onProgress: (p: ModelProgressUpdate) => { if (!cancelled) setDownloadPct(Math.round(p.percentage)); } });
+          } else {
+            await downloadAsset({ assetSrc: GEMMA4_2B_MULTIMODAL_Q4_K_M, onProgress: (p: ModelProgressUpdate) => { if (!cancelled) setDownloadPct(Math.round(p.percentage)); } });
+            await downloadAsset({ assetSrc: MMPROJ_GEMMA4_2B_MULTIMODAL_F16, onProgress: (p: ModelProgressUpdate) => { if (!cancelled) setDownloadPct(Math.round(p.percentage)); } });
+          }
+
+          if (cancelled) return;
+          setModelStatus("loading");
+          setDownloadPct(null);
+
+          if (isMedical) {
+            id = await loadModel({ modelSrc: MEDPSY_URL, modelType: "llamacpp-completion", modelConfig: { device: "gpu", ctx_size: 4096, verbosity: VERBOSITY.ERROR }, onProgress: (p: ModelProgressUpdate) => { if (!cancelled) setDownloadPct(Math.round(p.percentage)); } });
+            modelTypeRef.current = 'medical';
+          } else {
+            id = await loadModel({ modelSrc: GEMMA4_2B_MULTIMODAL_Q4_K_M, modelType: "llamacpp-completion", modelConfig: { device: "gpu", ctx_size: 4096, verbosity: VERBOSITY.ERROR, tools: true, projectionModelSrc: MMPROJ_GEMMA4_2B_MULTIMODAL_F16 }, onProgress: (p: ModelProgressUpdate) => { if (!cancelled) setDownloadPct(Math.round(p.percentage)); } });
+            modelTypeRef.current = 'general';
+          }
         }
 
         if (cancelled) return;
@@ -605,7 +633,7 @@ export default function ChatScreen() {
       modelIdRef.current = null;
       if (id) void unloadModel({ modelId: id, clearStorage: false }).catch(() => {});
     };
-  }, [incidentType]);
+  }, [incidentType, p2pConfig.isLoaded, p2pConfig.mode, p2pConfig.providerPublicKey]);
 
   // ── Helpers ───────────────────────────────────────────────────────────────
   const [stagedImage, setStagedImage] = useState<StagedImage | null>(null);
@@ -1292,13 +1320,21 @@ Return this exact shape:
     }
   }, [handleAgentCardSelect, handleStartProtocol, handleStepDone, handleStepCantDo, handleVitalsConfirm, handleTimerComplete, logAction]);
 
+  const isDelegating = p2pConfig.mode === 'consumer' && !!p2pConfig.providerPublicKey;
+
   const modelStatusLabel = useMemo(() => {
     if (modelStatus === "downloading") return downloadPct != null ? `AI loading ${downloadPct}%…` : "AI downloading…";
-    if (modelStatus === "loading") return "AI initializing…";
+    if (modelStatus === "loading") return isDelegating ? "Connecting to peer…" : "AI initializing…";
     if (modelStatus === "error") return "AI unavailable";
     if (modelStatus === 'ready' && !ragReady) return `Indexing protocols… ${ragStatus.progress != null ? ragStatus.progress + '%' : ''}`.trim();
     return undefined;
-  }, [modelStatus, downloadPct, ragReady, ragStatus]);
+  }, [modelStatus, downloadPct, ragReady, ragStatus, isDelegating]);
+
+  const p2pBadge = useMemo(() => {
+    if (p2pConfig.mode === 'consumer' && modelStatus === 'ready') return 'PEER';
+    if (p2pConfig.mode === 'provider' && p2pProvider.isProviding) return 'HOST';
+    return undefined;
+  }, [p2pConfig.mode, modelStatus, p2pProvider.isProviding]);
 
   const ListHeader = (
     <View style={styles.listHeader}>
@@ -1326,6 +1362,19 @@ Return this exact shape:
         onDismiss={() => setVoiceOnboardingVisible(false)}
       />
 
+      <P2PSetupSheet
+        visible={p2pSheetVisible}
+        onDismiss={() => setP2PSheetVisible(false)}
+        config={p2pConfig}
+        setMode={setP2PMode}
+        setProviderKey={setP2PKey}
+        providerStatus={p2pProvider.status}
+        providerPublicKey={p2pProvider.publicKey}
+        providerError={p2pProvider.error}
+        onStartProvider={p2pProvider.start}
+        onStopProvider={p2pProvider.stop}
+      />
+
       <SafeAreaView style={styles.safe}>
         <AgentStatusBar
           agentState={agentState.agentState}
@@ -1333,6 +1382,8 @@ Return this exact shape:
           currentStep={agentState.currentStep}
           totalSteps={agentState.totalSteps}
           onBack={() => router.back()}
+          p2pBadge={p2pBadge}
+          onP2PPress={() => setP2PSheetVisible(true)}
         />
 
         <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === "ios" ? "padding" : "height"} keyboardVerticalOffset={0}>
