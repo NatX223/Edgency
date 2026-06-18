@@ -638,6 +638,8 @@ Gemma 4 can then describe structural damage in an earthquake photo, identify vis
 - Expo CLI (`npm install -g expo-cli`)
 - EAS CLI (`npm install -g eas-cli`) — for building native binaries
 - Physical device
+- Android Studio
+- NDK 27 & 29
 
 ### Local Setup
 
