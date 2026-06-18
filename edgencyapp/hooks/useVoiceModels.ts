@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   downloadAsset,
   loadModel,
@@ -41,21 +42,25 @@ export function useVoiceModels() {
     loadingRef.current = true;
 
     try {
-      setState({ status: 'downloading', asrProgress: 0, ttsProgress: 0 });
+      const preloaded = await AsyncStorage.getItem('voice_preloaded');
 
-      // Download ASR (Whisper Tiny Q8 ≈ 43 MB)
-      await downloadAsset({
-        assetSrc: WHISPER_TINY_Q8_0,
-        onProgress: (p: ModelProgressUpdate) =>
-          setState(s => ({ ...s, asrProgress: Math.round(p.percentage) })),
-      });
+      if (preloaded !== 'true') {
+        setState({ status: 'downloading', asrProgress: 0, ttsProgress: 0 });
 
-      // Download TTS (Supertonic Q4 ≈ 132 MB)
-      await downloadAsset({
-        assetSrc: TTS_EN_SUPERTONIC_Q4_0,
-        onProgress: (p: ModelProgressUpdate) =>
-          setState(s => ({ ...s, ttsProgress: Math.round(p.percentage) })),
-      });
+        // Download ASR (Whisper Tiny Q8 ≈ 43 MB)
+        await downloadAsset({
+          assetSrc: WHISPER_TINY_Q8_0,
+          onProgress: (p: ModelProgressUpdate) =>
+            setState(s => ({ ...s, asrProgress: Math.round(p.percentage) })),
+        });
+
+        // Download TTS (Supertonic Q4 ≈ 132 MB)
+        await downloadAsset({
+          assetSrc: TTS_EN_SUPERTONIC_Q4_0,
+          onProgress: (p: ModelProgressUpdate) =>
+            setState(s => ({ ...s, ttsProgress: Math.round(p.percentage) })),
+        });
+      }
 
       setState(s => ({ ...s, status: 'loading', asrProgress: null, ttsProgress: null }));
 

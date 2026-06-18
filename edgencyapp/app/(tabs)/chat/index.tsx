@@ -33,6 +33,9 @@ import {
   SafeAreaView,
   StatusBar,
   StyleSheet,
+  Switch,
+  Text,
+  TouchableOpacity,
   View,
 } from "react-native";
 
@@ -41,324 +44,32 @@ import { useMediaPermissions } from "@/hooks/useMediaPermissions";
 import { useAgentTools } from "@/hooks/useAgentTools";
 import { useVoiceModels } from "@/hooks/useVoiceModels";
 import { VoiceModelOnboarding } from "@/components/chat/VoiceModelOnboarding";
-import * as FileSystem from 'expo-file-system/legacy';
 import { useRAG } from '@/hooks/useRag';
-import * as Haptics from 'expo-haptics';
 import * as ImagePicker from "expo-image-picker";
-import * as Location from "expo-location";
-import { z } from "zod";
-import { Vibration } from "react-native";
-import { Audio } from 'expo-av';
 import type { AgentCardData, ParsedProtocol } from "@/types/agent";
+import type { ChatMessage } from "@/types/chatTypes";
 
-import {
-  completion,
-  downloadAsset,
-  GEMMA4_2B_MULTIMODAL_Q4_K_M,
-  MMPROJ_GEMMA4_2B_MULTIMODAL_F16,
-  loadModel,
-  type ModelProgressUpdate,
-  type ToolInput,
-  unloadModel,
-  VERBOSITY
-} from "@qvac/sdk";
+import { completion, type ToolInput } from "@qvac/sdk";
 import { useP2PConfig } from "@/hooks/useP2PConfig";
 import { useP2PProvider } from "@/hooks/useP2PProvider";
 import { P2PSetupSheet } from "@/components/p2p/P2PSetupSheet";
 
-// ─── QVAC types ──────────────────────────────────────────────────────────────
-type Role = "user" | "assistant";
-type Attachment = { path: string };
-type ChatMessage = { id: string; role: Role; content: string; attachments?: Attachment[] };
-
-function makeId() {
-  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-
-function resolveToolResultNote(toolName: string, result: any): string | null {
-  if (result?.error) {
-    console.warn(`[Tool:${toolName}]`, result.error);
-    return null;
-  }
-  switch (toolName) {
-    case 'get_user_location':
-      return result?.address
-        ? `📍 ${result.address}`
-        : result?.latitude != null
-          ? `📍 ${(result.latitude as number).toFixed(5)}, ${(result.longitude as number).toFixed(5)}`
-          : null;
-    case 'send_emergency_report':
-      return result?.success ? `✓ Emergency report sent to ${result.sentTo}.` : null;
-    // schedule_checkin and alert_user are background actions — show nothing in chat
-    default:
-      return null;
-  }
-}
-
-// ─── Text-based tool dispatch helpers ────────────────────────────────────────
-// Small on-device models can't emit structured tool-call JSON reliably.
-// We instruct the model to append ACTION: lines and parse them ourselves.
-function parseActionDirectives(text: string): Array<{ tool: string; args: Record<string, unknown> }> {
-  const out: Array<{ tool: string; args: Record<string, unknown> }> = [];
-  for (const match of text.matchAll(/^ACTION:(\{.+\})$/gm)) {
-    try {
-      const parsed = JSON.parse(match[1]);
-      if (parsed?.tool && parsed.tool !== 'none') {
-        out.push({ tool: parsed.tool, args: parsed.args ?? {} });
-      }
-    } catch (_) {}
-  }
-  return out;
-}
-
-const TOOL_CALL_TEXT_RE = /\b(?:schedule_checkin|get_user_location|send_emergency_report|alert_user):\s*\n?\s*\{[^]*?\}\s*/g;
-
-function stripActionDirectives(text: string): string {
-  return text
-    .replace(/\nACTION:\{[^\n]+\}/g, '')
-    .replace(/^ACTION:\{[^\n]+\}$/gm, '')
-    .replace(TOOL_CALL_TEXT_RE, '')
-    .trim();
-}
-
-// ─── Per-incident assessment questions ───────────────────────────────────────
-const ASSESSMENT_QUESTIONS: Record<string, AgentCardData[]> = {
-  medical: [
-    {
-      question: 'Is the person conscious?',
-      icon: '🩺',
-      options: [
-        { label: 'Yes',        value: 'conscious_yes',    variant: 'primary'  },
-        { label: 'No',         value: 'conscious_no',     variant: 'primary'  },
-        { label: "Not sure",   value: 'conscious_unsure', variant: 'tertiary' },
-      ],
-    },
-    {
-      question: 'Are they breathing?',
-      icon: '🫁',
-      options: [
-        { label: 'Yes',               value: 'breathing_yes',     variant: 'primary'  },
-        { label: 'No',                value: 'breathing_no',      variant: 'primary'  },
-        { label: 'Labored / gasping', value: 'breathing_labored', variant: 'tertiary' },
-      ],
-    },
-  ],
-  earth: [
-    {
-      question: 'Are you or anyone nearby trapped?',
-      icon: '🏚️',
-      options: [
-        { label: 'Yes, trapped',   value: 'trapped_yes',    variant: 'primary'  },
-        { label: 'No, can move',   value: 'trapped_no',     variant: 'primary'  },
-        { label: 'Unsure',         value: 'trapped_unsure', variant: 'tertiary' },
-      ],
-    },
-    {
-      question: 'Are there injuries?',
-      icon: '🩹',
-      options: [
-        { label: 'Serious',  value: 'injuries_serious', variant: 'primary'  },
-        { label: 'Minor',    value: 'injuries_minor',   variant: 'primary'  },
-        { label: 'None',     value: 'injuries_none',    variant: 'tertiary' },
-      ],
-    },
-  ],
-  flood: [
-    {
-      question: 'Is the water level rising?',
-      icon: '🌊',
-      options: [
-        { label: 'Rapidly',           value: 'water_rapid',  variant: 'primary'  },
-        { label: 'Slowly',            value: 'water_slow',   variant: 'primary'  },
-        { label: 'Stable / receding', value: 'water_stable', variant: 'tertiary' },
-      ],
-    },
-    {
-      question: 'Are you in an elevated location?',
-      icon: '🏔️',
-      options: [
-        { label: 'Yes, elevated',     value: 'location_safe',   variant: 'primary' },
-        { label: 'No, ground level',  value: 'location_danger', variant: 'primary' },
-      ],
-    },
-  ],
-  storm: [
-    {
-      question: 'Are you in a secure shelter?',
-      icon: '🌩️',
-      options: [
-        { label: 'Yes, sheltered', value: 'shelter_yes', variant: 'primary' },
-        { label: 'No, exposed',    value: 'shelter_no',  variant: 'primary' },
-      ],
-    },
-    {
-      question: 'Is there immediate danger around you?',
-      icon: '⚡',
-      options: [
-        { label: 'Yes, critical',    value: 'danger_critical',  variant: 'primary'  },
-        { label: 'Some risks',       value: 'danger_moderate',  variant: 'primary'  },
-        { label: 'Relatively safe',  value: 'danger_safe',      variant: 'tertiary' },
-      ],
-    },
-  ],
-};
-
-// ─── System prompt builder ────────────────────────────────────────────────────
-function buildSystemPrompt(
-  incidentType: IncidentType | null,
-  user: UserRecord | null,
-  ragChunks: string[] = [],
-  triageSeverity?: string
-): string {
-  const lines: string[] = [
-    "You are an emergency response AI assistant named Edgent.",
-    "The user is in an emergency situation. Be calm, clear, and supportive.",
-    "Give short, actionable guidance. Never panic or alarm the user further.",
-    '',
-    '## Image Analysis',
-    'If the user sends an image, analyse it carefully and use what you see to give more accurate emergency guidance.',
-    '',
-  ];
-
-  if (incidentType) {
-    lines.push(`\nCURRENT EMERGENCY TYPE: ${incidentType.toUpperCase()}.`);
-    lines.push("Tailor every piece of advice specifically to this emergency type.");
-  }
-
-  if (triageSeverity) {
-    lines.push(`\n## Triage Severity\n${triageSeverity}`);
-  }
-
-  if (user) {
-    lines.push("\nUSER PROFILE:");
-    lines.push(`- Name: ${user.full_name}`);
-    lines.push(`- Role: ${user.role}`);
-    if (user.experience_level) {
-      lines.push(`- Experience level: ${user.experience_level}`);
-      if (user.experience_level === "rookie") {
-        lines.push("  (Use simple language and step-by-step instructions.)");
-      }
-    }
-    if (user.medical_history?.trim())   lines.push(`- Medical history: ${user.medical_history}`);
-    if (user.health_conditions?.trim()) lines.push(`- Health conditions: ${user.health_conditions}`);
-    if (user.disabilities?.trim())      lines.push(`- Disabilities: ${user.disabilities}`);
-  }
-
-  if (ragChunks.length > 0) {
-    lines.push('\n## Reference Material (WHO Prehospital Emergency Care Protocols)');
-    lines.push('Use these passages as your PRIMARY clinical reference.');
-    ragChunks.forEach((chunk, i) => {
-      lines.push(`### Protocol ${i + 1}`);
-      lines.push(chunk.trim());
-      lines.push('');
-    });
-  }
-
-  lines.push('\n## TOOL DISPATCH — append an ACTION line at the end of EVERY reply, no exceptions');
-  lines.push('Exact format (raw text, no markdown):');
-  lines.push('ACTION:{"tool":"TOOL_NAME","args":{...}}');
-  lines.push('No action needed? Still write: ACTION:{"tool":"none"}');
-  lines.push('');
-  lines.push('send_emergency_report — user is trapped / bleeding / needs external rescue:');
-  lines.push('  ACTION:{"tool":"send_emergency_report","args":{"condition":"<observed condition>","recipient":"emergency_services"}}');
-  lines.push('schedule_checkin — append after EVERY serious or critical response:');
-  lines.push('  ACTION:{"tool":"schedule_checkin","args":{"delay_seconds":90,"message":"Still with me? Tap or type to confirm."}}');
-  lines.push('alert_user — user stopped responding after a check-in:');
-  lines.push('  ACTION:{"tool":"alert_user","args":{"intensity":"urgent"}}');
-  lines.push('get_user_location — need GPS for dispatch or evacuation:');
-  lines.push('  ACTION:{"tool":"get_user_location","args":{"name":"user"}}');
-  lines.push('You may output multiple ACTION lines. You MUST output at least one.');
-
-  return lines.join("\n");
-}
-
-function seedToHistory(seeds: Message[]): ChatMessage[] {
-  return seeds
-    .filter(m => m.text && !m.type)
-    .map(m => ({ id: m.id, role: m.sender === "user" ? "user" : "assistant", content: m.text! }));
-}
-
-const locationTool = {
-  name: "get_user_location",
-  description: "Get the user's current GPS coordinates and a human-readable address.",
-  parameters: z.object({ name: z.string().describe("the name of the user") }),
-  handler: async (_args: Record<string, unknown>) => {
-    try {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== "granted") return { error: "Location permission denied." };
-      const position = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-      const { latitude, longitude } = position.coords;
-      let address = "Address unavailable";
-      try {
-        const [geo] = await Location.reverseGeocodeAsync({ latitude, longitude });
-        if (geo) {
-          address = [geo.streetNumber, geo.street, geo.district, geo.city, geo.region].filter(Boolean).join(", ") || "Address unavailable";
-        }
-      } catch (_) {
-        console.warn("[Location] reverseGeocodeAsync unavailable, returning coordinates only");
-      }
-      return { latitude, longitude, address };
-    } catch (e: any) {
-      return { error: `Location lookup failed: ${e?.message ?? String(e)}` };
-    }
-  },
-};
-
-async function resolveLocalPath(uri: string): Promise<string> {
-  if (uri.startsWith('content://')) {
-    const dest = `${FileSystem.documentDirectory}attachment_${Date.now()}.jpg`;
-    await FileSystem.copyAsync({ from: uri, to: dest });
-    return dest;
-  }
-  return uri.replace('file://', '');
-}
-
-// ─── Emergency intent detection ──────────────────────────────────────────────
-const EMERGENCY_PATTERN = /\b(emergency|accident|injury|injured|hurt|pain|bleed|bleeding|blood|unconscious|unresponsive|breathing|seizure|stroke|heart|cardiac|cpr|choking|drowning|burn|fracture|broken|wound|fire|earthquake|flood|storm|lightning|tsunami|landslide|stuck|rubble|trapped|evacuate|evacuation|collapse|danger|rescue|ambulance|hospital|doctor|nurse|help|sos|critical|severe|dead|dying|faint|dizzy|allergic|overdose|poisoning|electric|shock|threat|attack|disaster|crisis)\b/i;
-
-function hasEmergencyIntent(text: string): boolean {
-  return EMERGENCY_PATTERN.test(text);
-}
-
-// Narrower pattern: user is personally in immediate physical danger right now
-const CRITICAL_SELF_DANGER_PATTERN = /\b(stuck|trapped|can'?t move|cannot move|buried|pinned|rubble|debris|bleed|bleeding|blood|can'?t breathe|cannot breathe|drowning|unconscious|dying|help me|save me|sos|can'?t get out|cannot get out)\b/i;
-
-// Maps incident type to its dedicated RAG workspace so searches never
-// pull chunks from unrelated domains (e.g. lightning into medical chat).
-const INCIDENT_WORKSPACE: Record<string, string> = {
-  medical: 'medical',
-  earth:   'general',
-  flood:   'water',
-  storm:   'storm',
-};
-
-// ─── Parse numbered steps from LLM free-text response ────────────────────────
-function parseStepsFromText(text: string): ParsedProtocol['steps'] {
-  const lines = text.split('\n');
-  const steps: string[] = [];
-  let current = '';
-
-  for (const line of lines) {
-    if (/^\s*(?:step\s*)?(\d+)[.):\-]\s+\S/i.test(line)) {
-      if (current.trim()) steps.push(current.trim());
-      current = line.replace(/^\s*(?:step\s*)?\d+[.):\-]\s*/i, '').trim();
-    } else if (current && line.trim()) {
-      current += ' ' + line.trim();
-    }
-  }
-  if (current.trim()) steps.push(current.trim());
-
-  if (steps.length >= 2) {
-    return steps.map(instruction => ({ instruction, checklist: null, stepActions: null, timedStep: null }));
-  }
-
-  // Fallback: bullet points or non-empty lines
-  const bullets = text.split('\n')
-    .map(l => l.replace(/^[-•*]\s*/, '').replace(/^\s*(?:step\s*)?\d+[.):\-]\s*/i, '').trim())
-    .filter(l => l.length > 15);
-
-  return bullets.slice(0, 6).map(instruction => ({ instruction, checklist: null, stepActions: null, timedStep: null }));
-}
+import {
+  makeId,
+  resolveToolResultNote,
+  parseActionDirectives,
+  stripActionDirectives,
+  buildSystemPrompt,
+  seedToHistory,
+  resolveLocalPath,
+  hasEmergencyIntent,
+  parseStepsFromText,
+} from "@/utils/chatUtils";
+import { ASSESSMENT_QUESTIONS, CRITICAL_SELF_DANGER_PATTERN, INCIDENT_WORKSPACE } from "./chatConstants";
+import { locationTool } from "./locationTool";
+import { useModelLoader } from "@/hooks/useModelLoader";
+import { useCheckinTimers } from "@/hooks/useCheckinTimers";
+import { useVoicePipeline } from "@/hooks/useVoicePipeline";
 
 export default function ChatScreen() {
   // ── UI state ──────────────────────────────────────────────────────────────
@@ -422,60 +133,19 @@ export default function ChatScreen() {
   const hasIncident    = Boolean(incidentType && incidentTitle);
 
   // ── QVAC model state ──────────────────────────────────────────────────────
-  const [modelId,     setModelId]     = useState<string | null>(null);
-  const [modelStatus, setModelStatus] = useState<"idle" | "downloading" | "loading" | "ready" | "error">("idle");
-  const [downloadPct, setDownloadPct] = useState<number | null>(null);
-  const modelIdRef   = useRef<string | null>(null);
-  const modelTypeRef = useRef<'medical' | 'general'>('general');
+  // false = accuracy (Gemma 4 2B), true = speed (Llama 1B); ignored for medical
+  const [speedMode, setSpeedMode] = useState(false);
+
+  const { modelId, modelIdRef, modelTypeRef, modelStatus, downloadPct } = useModelLoader({
+    incidentType,
+    speedMode,
+    p2pConfig,
+    logActionRef,
+  });
 
   const [history,  setHistory]  = useState<ChatMessage[]>([]);
   const historyRef = useRef<ChatMessage[]>([]);
   historyRef.current = history;
-
-  // ── Voice onboarding state ────────────────────────────────────────────────
-  const [voiceOnboardingVisible, setVoiceOnboardingVisible] = useState(false);
-  const pendingVoiceUriRef = useRef<{ uri: string; durationMs: number } | null>(null);
-
-  // When models become ready: dismiss onboarding and process any pending voice message
-  useEffect(() => {
-    if (voiceModels.state.status !== 'ready') return;
-    setVoiceOnboardingVisible(false);
-
-    const pending = pendingVoiceUriRef.current;
-    if (!pending) return;
-    pendingVoiceUriRef.current = null;
-
-    const userVoiceMsg: Message = { id: makeId(), sender: 'user', audioUri: pending.uri, audioDurationMs: pending.durationMs };
-
-    voiceModels.transcribeAudio(pending.uri)
-      .then(transcribedText => {
-        console.log(`[voice] transcription (pending): "${transcribedText}", audioUri: ${pending.uri}, durationMs: ${pending.durationMs}`);
-        if (!transcribedText) { appendUserMessage(userVoiceMsg); return; }
-        return appendUserMessage(
-          userVoiceMsg,
-          transcribedText,
-          undefined,
-          async (responseText) => {
-            const cleanText = stripActionDirectives(responseText).trim();
-            if (!cleanText) return;
-            const { uri: wavUri, durationMs } = await voiceModels.synthesizeSpeech(cleanText);
-            console.log(`[voice] tts (pending): durationMs: ${durationMs}, wavUri: ${wavUri}, inputText: "${cleanText}"`);
-            appendMsg({ id: makeId(), sender: 'ai', audioUri: wavUri, audioDurationMs: durationMs });
-            await Audio.setAudioModeAsync({ allowsRecordingIOS: false, playsInSilentModeIOS: true });
-            const { sound } = await Audio.Sound.createAsync({ uri: wavUri }, { shouldPlay: true });
-            sound.setOnPlaybackStatusUpdate(status => {
-              if (status.isLoaded && status.didJustFinish) sound.unloadAsync().catch(() => {});
-            });
-          },
-        );
-      })
-      .catch(e => { console.warn('[voice] pending message processing failed:', e); appendUserMessage(userVoiceMsg); });
-  }, [voiceModels.state.status]);
-
-  // ── Check-in / alert timer state ─────────────────────────────────────────
-  const lastUserActivityRef  = useRef<number>(Date.now());
-  const checkinTimerRef      = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const alertTimerRef        = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── Agent orchestration state ─────────────────────────────────────────────
   // Track which assessment question index we're on
@@ -581,85 +251,6 @@ export default function ChatScreen() {
     })();
   }, [dbReady, sessionIdParam]);
 
-  // ── Model lifecycle ───────────────────────────────────────────────────────
-  const MEDPSY_URL = 'https://huggingface.co/buckets/NatXeth/MedPsy-1.7B-GGUF-bucket/resolve/medpsy-1.7b-q4_k_m-imat.gguf?download=true';
-
-  useEffect(() => {
-    if (!p2pConfig.isLoaded) return; // wait until AsyncStorage config is read
-    let cancelled = false;
-    const isMedical = incidentType === 'medical';
-    const isDelegating = p2pConfig.mode === 'consumer' && !!p2pConfig.providerPublicKey;
-    const modelDisplayName = isMedical ? 'MedPsy 1.7B Q4_K_M' : 'Gemma 4 2B Multimodal Q4_K_M';
-
-    (async () => {
-      try {
-        void logActionRef.current({ actionType: 'model_load_start', message: `Loading ${modelDisplayName}`, metadata: { modelName: modelDisplayName, incidentType, device: 'gpu', mode: isDelegating ? 'p2p' : 'local' } });
-        setModelStatus("idle");
-        setModelId(null);
-        setDownloadPct(null);
-
-        let id: string;
-
-        if (isDelegating) {
-          // ── Delegate mode: skip local download, route inference to peer ──
-          setModelStatus("loading");
-          const modelSrc = isMedical ? MEDPSY_URL : GEMMA4_2B_MULTIMODAL_Q4_K_M;
-          id = await loadModel({
-            modelSrc,
-            modelType: "llamacpp-completion",
-            delegate: {
-              providerPublicKey: p2pConfig.providerPublicKey!,
-              timeout: 60_000,
-            },
-          } as any);
-          modelTypeRef.current = isMedical ? 'medical' : 'general';
-        } else {
-          // ── Local mode: download then load on-device ──────────────────────
-          setModelStatus("downloading");
-
-          if (isMedical) {
-            await downloadAsset({ assetSrc: MEDPSY_URL, onProgress: (p: ModelProgressUpdate) => { if (!cancelled) setDownloadPct(Math.round(p.percentage)); } });
-          } else {
-            await downloadAsset({ assetSrc: GEMMA4_2B_MULTIMODAL_Q4_K_M, onProgress: (p: ModelProgressUpdate) => { if (!cancelled) setDownloadPct(Math.round(p.percentage)); } });
-            await downloadAsset({ assetSrc: MMPROJ_GEMMA4_2B_MULTIMODAL_F16, onProgress: (p: ModelProgressUpdate) => { if (!cancelled) setDownloadPct(Math.round(p.percentage)); } });
-          }
-
-          if (cancelled) return;
-          setModelStatus("loading");
-          setDownloadPct(null);
-
-          if (isMedical) {
-            id = await loadModel({ modelSrc: MEDPSY_URL, modelType: "llamacpp-completion", modelConfig: { device: "gpu", ctx_size: 4096, verbosity: VERBOSITY.ERROR }, onProgress: (p: ModelProgressUpdate) => { if (!cancelled) setDownloadPct(Math.round(p.percentage)); } });
-            modelTypeRef.current = 'medical';
-          } else {
-            id = await loadModel({ modelSrc: GEMMA4_2B_MULTIMODAL_Q4_K_M, modelType: "llamacpp-completion", modelConfig: { device: "gpu", ctx_size: 4096, verbosity: VERBOSITY.ERROR, tools: true, projectionModelSrc: MMPROJ_GEMMA4_2B_MULTIMODAL_F16 }, onProgress: (p: ModelProgressUpdate) => { if (!cancelled) setDownloadPct(Math.round(p.percentage)); } });
-            modelTypeRef.current = 'general';
-          }
-        }
-
-        if (cancelled) return;
-        modelIdRef.current = id;
-        setModelId(id);
-        setModelStatus("ready");
-        setDownloadPct(null);
-        void logActionRef.current({ actionType: 'model_load_complete', message: `Model ready: ${modelDisplayName}`, metadata: { modelId: id, modelName: modelDisplayName, device: 'gpu', mode: isDelegating ? 'p2p' : 'local', incidentType } });
-      } catch (e: any) {
-        if (!cancelled) {
-          setModelStatus("error");
-          void logActionRef.current({ actionType: 'model_load_error', message: `Model load failed: ${e?.message ?? String(e)}`, metadata: { modelName: modelDisplayName, incidentType } });
-          console.error("[QVAC] Init failed:", e?.message ?? String(e));
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-      const id = modelIdRef.current;
-      modelIdRef.current = null;
-      if (id) void unloadModel({ modelId: id, clearStorage: false }).catch(() => {});
-    };
-  }, [incidentType, p2pConfig.isLoaded, p2pConfig.mode, p2pConfig.providerPublicKey]);
-
   // ── Helpers ───────────────────────────────────────────────────────────────
   const [stagedImage, setStagedImage] = useState<StagedImage | null>(null);
 
@@ -684,48 +275,8 @@ export default function ChatScreen() {
     });
   }, []);
 
-  // ── Check-in helpers ─────────────────────────────────────────────────────
-  const clearCheckinTimers = useCallback(() => {
-    if (checkinTimerRef.current) { clearTimeout(checkinTimerRef.current); checkinTimerRef.current = null; }
-    if (alertTimerRef.current)   { clearTimeout(alertTimerRef.current);   alertTimerRef.current   = null; }
-  }, []);
-
-  const triggerPhysicalAlert = useCallback(async () => {
-    // SOS morse vibration pattern then haptic reinforcement
-    Vibration.vibrate(
-      [100,100,100,100,100,100,300,100,300,100,300,100,100,100,100,100,100],
-      false
-    );
-    for (let i = 0; i < 5; i++) {
-      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-      if (i < 4) await new Promise(r => setTimeout(r, 200));
-    }
-    appendMsg({
-      id: makeId(),
-      sender: 'ai',
-      text: '⚠️ I haven\'t heard from you. Your device is alerting nearby people. Call 112 immediately if you are able.',
-    });
-  }, [appendMsg]);
-
-  // Called by the schedule_checkin tool handler; wires up the foreground timer
-  const handleCheckinScheduled = useCallback((delaySecs: number, message: string) => {
-    clearCheckinTimers();
-    checkinTimerRef.current = setTimeout(() => {
-      // Only fire if user hasn't been active in the meantime
-      const idleSecs = (Date.now() - lastUserActivityRef.current) / 1000;
-      if (idleSecs < delaySecs - 10) return;
-
-      appendMsg({ id: makeId(), sender: 'ai', text: message });
-
-      // Give the user 90 more seconds before physically alerting
-      alertTimerRef.current = setTimeout(() => {
-        triggerPhysicalAlert();
-      }, 90_000);
-    }, delaySecs * 1000);
-  }, [clearCheckinTimers, triggerPhysicalAlert, appendMsg]);
-
-  // Cleanup timers on unmount
-  useEffect(() => () => clearCheckinTimers(), [clearCheckinTimers]);
+  // ── Check-in timers ──────────────────────────────────────────────────────
+  const { lastUserActivityRef, clearCheckinTimers, handleCheckinScheduled } = useCheckinTimers({ appendMsg });
 
   // ── Agent tools (location + emergency report + check-in + alert) ─────────
   const agentTools = useAgentTools({ getUser, onCheckinScheduled: handleCheckinScheduled });
@@ -774,7 +325,7 @@ Return this exact shape:
 
       let json = '';
       for await (const event of run.events) {
-        console.log(event.type);        
+        console.log(event.type);
         if (event.type === 'contentDelta') json += event.text;
       }
 
@@ -804,7 +355,7 @@ Return this exact shape:
       scrollToBottom();
 
       if (!msg.text && !attachmentPath) return;
-      console.log(`prompt: ${msg.text}`);      
+      console.log(`prompt: ${msg.text}`);
 
       const userHistoryMsg: ChatMessage = {
         id: msg.id,
@@ -926,7 +477,7 @@ Return this exact shape:
             const result = await toolCall.invoke();
             const note = resolveToolResultNote(toolCall.name, result);
             if (note) {
-              console.log(note);              
+              console.log(note);
               accumulated += `\n${note}`;
               setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, text: accumulated } : m));
             }
@@ -953,7 +504,6 @@ Return this exact shape:
         } catch (e) { console.warn("[DB] Failed to save:", e); }
 
         console.log(`response: ${accumulated}`);
-        
         console.log(`chunks: ${ragChunks}, modelUsed: ${modelId}`);
 
         if (onAfterResponse) {
@@ -973,6 +523,16 @@ Return this exact shape:
     },
     [scrollToBottom, modelStatus, ragReady, ragSearch, incidentType, agentState.severity, appendMsg]
   );
+
+  // ── Voice pipeline ────────────────────────────────────────────────────────
+  const { voiceOnboardingVisible, setVoiceOnboardingVisible, handleMicPressIn, handleMicPressOut } = useVoicePipeline({
+    voiceModels,
+    requestMicrophone,
+    startRecording,
+    stopRecording,
+    appendUserMessage,
+    appendMsg,
+  });
 
   // ── Handle agent card selection ───────────────────────────────────────────
   const handleAgentCardSelect = useCallback(async (cardId: string, value: string) => {
@@ -1208,7 +768,7 @@ Return this exact shape:
     setStagedImage(null);
   }, [appendUserMessage, clearCheckinTimers, incidentType, appendMsg]);
 
-  // ── Camera / gallery / mic ────────────────────────────────────────────────
+  // ── Camera / gallery ──────────────────────────────────────────────────────
   const handleCameraPress = useCallback(async () => {
     const ok = await requestCamera();
     if (!ok) return;
@@ -1228,77 +788,6 @@ Return this exact shape:
     try { setStagedImage({ uri, localPath: await resolveLocalPath(uri) }); } catch { setStagedImage({ uri, localPath: uri }); }
     void logActionRef.current({ actionType: 'image_selected', message: 'Image selected from gallery', metadata: { source: 'gallery', uri } });
   }, [requestLibrary]);
-
-  const handleMicPressIn = useCallback(async () => {
-    const ok = await requestMicrophone();
-    if (!ok) return;
-    await startRecording();
-  }, [requestMicrophone, startRecording]);
-
-  const handleMicPressOut = useCallback(async () => {
-    const result = await stopRecording();
-    if (!result || result.durationMs < 500) return;
-
-    const userVoiceMsg: Message = {
-      id: makeId(),
-      sender: 'user',
-      audioUri: result.uri,
-      audioDurationMs: result.durationMs,
-    };
-
-    // Voice models not yet downloaded → show onboarding, defer the message
-    if (!voiceModels.isReady) {
-      pendingVoiceUriRef.current = { uri: result.uri, durationMs: result.durationMs };
-      setVoiceOnboardingVisible(true);
-      return;
-    }
-
-    // Transcribe the voice message
-    let transcribedText = '';
-    try {
-      transcribedText = await voiceModels.transcribeAudio(result.uri);
-      console.log(`[voice] transcription: "${transcribedText}", audioUri: ${result.uri}, durationMs: ${result.durationMs}`);
-    } catch (e) {
-      console.warn('[voice] transcription failed:', e);
-    }
-
-    // No transcription → show voice bubble only (no AI response)
-    if (!transcribedText) {
-      appendUserMessage(userVoiceMsg);
-      return;
-    }
-
-    // Full voice pipeline: voice bubble → LLM → TTS → AI voice bubble
-    await appendUserMessage(
-      userVoiceMsg,
-      transcribedText,
-      undefined,
-      async (responseText) => {
-        const cleanText = stripActionDirectives(responseText).trim();
-        if (!cleanText) return;
-        try {
-          const { uri: wavUri, durationMs } = await voiceModels.synthesizeSpeech(cleanText);
-          console.log(`[voice] tts: durationMs: ${durationMs}, wavUri: ${wavUri}, inputText: "${cleanText}"`);
-          appendMsg({ id: makeId(), sender: 'ai', audioUri: wavUri, audioDurationMs: durationMs });
-
-          // Auto-play the AI voice response
-          try {
-            await Audio.setAudioModeAsync({ allowsRecordingIOS: false, playsInSilentModeIOS: true });
-            const { sound } = await Audio.Sound.createAsync({ uri: wavUri }, { shouldPlay: true });
-            sound.setOnPlaybackStatusUpdate(status => {
-              if (status.isLoaded && status.didJustFinish) {
-                sound.unloadAsync().catch(() => {});
-              }
-            });
-          } catch (e) {
-            console.warn('[voice] auto-play failed:', e);
-          }
-        } catch (e) {
-          console.warn('[voice] TTS synthesis failed:', e);
-        }
-      },
-    );
-  }, [stopRecording, voiceModels, appendUserMessage, appendMsg]);
 
   const handleFindAED = useCallback(() => {
     const id = makeId();
@@ -1453,6 +942,25 @@ Return this exact shape:
             />
           )}
 
+          {incidentType !== 'medical' && (
+            <View style={styles.speedToggleRow}>
+              <TouchableOpacity onPress={() => setSpeedMode(false)} activeOpacity={0.7}>
+                <Text style={[styles.speedToggleLabel, !speedMode && styles.speedToggleLabelActive]}>Accuracy</Text>
+              </TouchableOpacity>
+              <Switch
+                value={speedMode}
+                onValueChange={setSpeedMode}
+                disabled={modelStatus === 'downloading' || modelStatus === 'loading'}
+                trackColor={{ false: Colors.surfaceContainerHigh, true: Colors.primaryContainer }}
+                thumbColor={speedMode ? Colors.onPrimary : Colors.onSurface}
+                ios_backgroundColor={Colors.surfaceContainerHigh}
+              />
+              <TouchableOpacity onPress={() => setSpeedMode(true)} activeOpacity={0.7}>
+                <Text style={[styles.speedToggleLabel, speedMode && styles.speedToggleLabelActive]}>Speed</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+
           <ChatInputBar
             onSend={handleSend}
             onCameraPress={handleCameraPress}
@@ -1476,4 +984,23 @@ const styles = StyleSheet.create({
   listContent: { paddingHorizontal: Spacing.marginMobile, paddingBottom: Spacing.lg, gap: Spacing.lg },
   listHeader:  { gap: Spacing.md, paddingTop: Spacing.md, paddingBottom: Spacing.lg },
   typingWrap:  { paddingTop: Spacing.sm },
+
+  speedToggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.sm,
+    paddingVertical: Spacing.xs,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.06)',
+  },
+  speedToggleLabel: {
+    fontSize: 12,
+    fontFamily: 'Inter_500Medium',
+    color: Colors.onSurfaceVariant,
+    letterSpacing: 0.5,
+  },
+  speedToggleLabelActive: {
+    color: Colors.onSurface,
+  },
 });

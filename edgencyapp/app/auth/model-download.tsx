@@ -12,9 +12,11 @@ import {
 import { router } from 'expo-router';
 import {
   downloadAsset,
-  LLAMA_3_2_1B_INST_Q4_0,
+  LLAMA_TOOL_CALLING_1B_INST_Q4_K,
   GEMMA4_2B_MULTIMODAL_Q4_K_M,
   MMPROJ_GEMMA4_2B_MULTIMODAL_F16,
+  WHISPER_TINY_Q8_0,
+  TTS_EN_SUPERTONIC_Q4_0,
   loadModel,
   VERBOSITY,
   type ModelProgressUpdate,
@@ -25,7 +27,7 @@ import { Colors, Typography, Spacing, Radii } from '@/constants/tokens';
 const { width } = Dimensions.get('window');
 
 // ─── Phase config ─────────────────────────────────────────────────────────────
-type Phase = 'downloading' | 'loading' | 'ready' | 'error';
+type Phase = 'downloading' | 'loading' | 'voice-downloading' | 'ready' | 'error';
 
 const PHASE_COPY: Record<Phase, { headline: string; sub: string; emoji: string }> = {
   downloading: {
@@ -37,6 +39,11 @@ const PHASE_COPY: Record<Phase, { headline: string; sub: string; emoji: string }
     headline: 'Almost ready',
     sub: 'Loading the AI engine into memory. This takes a moment on first launch.',
     emoji: '⚡',
+  },
+  'voice-downloading': {
+    headline: 'Setting up voice',
+    sub: 'Downloading on-device voice models so Edgent can hear you and speak back.',
+    emoji: '🎙',
   },
   ready: {
     headline: "You're all set",
@@ -114,6 +121,8 @@ function ProgressBar({ pct }: { pct: number }) {
 export default function ModelDownloadScreen() {
   const [phase,    setPhase]    = useState<Phase>('downloading');
   const [pct,      setPct]      = useState(0);
+  const [asrPct,   setAsrPct]   = useState(0);
+  const [ttsPct,   setTtsPct]   = useState(0);
   const [errorMsg, setErrorMsg] = useState('');
 
   // Content fade when phase changes
@@ -149,6 +158,12 @@ export default function ModelDownloadScreen() {
       try {
         // 1. Download weights
         await downloadAsset({
+          assetSrc: LLAMA_TOOL_CALLING_1B_INST_Q4_K,
+          onProgress: (p: ModelProgressUpdate) => {
+            if (!cancelled) setPct(Math.round(p.percentage));
+          },
+        });
+        await downloadAsset({
           assetSrc: GEMMA4_2B_MULTIMODAL_Q4_K_M,
           onProgress: (p: ModelProgressUpdate) => {
             if (!cancelled) setPct(Math.round(p.percentage));
@@ -179,7 +194,7 @@ export default function ModelDownloadScreen() {
         fadeInContent();
 
         await loadModel({
-          modelSrc:    LLAMA_3_2_1B_INST_Q4_0,
+          modelSrc:    LLAMA_TOOL_CALLING_1B_INST_Q4_K,
           modelType:   'llm',
           modelConfig: {
             device:    'gpu',
@@ -193,8 +208,33 @@ export default function ModelDownloadScreen() {
 
         if (cancelled) return;
 
-        // 3. Mark model as pre-loaded so chat screen can skip re-download
-        await AsyncStorage.setItem('model_preloaded', 'true');
+        // 3. Download voice models (Whisper ASR + Supertonic TTS)
+        setPhase('voice-downloading');
+        setAsrPct(0);
+        setTtsPct(0);
+        fadeInContent();
+
+        await downloadAsset({
+          assetSrc: WHISPER_TINY_Q8_0,
+          onProgress: (p: ModelProgressUpdate) => {
+            if (!cancelled) setAsrPct(Math.round(p.percentage));
+          },
+        });
+
+        await downloadAsset({
+          assetSrc: TTS_EN_SUPERTONIC_Q4_0,
+          onProgress: (p: ModelProgressUpdate) => {
+            if (!cancelled) setTtsPct(Math.round(p.percentage));
+          },
+        });
+
+        if (cancelled) return;
+
+        // 4. Mark everything as pre-loaded
+        await AsyncStorage.multiSet([
+          ['model_preloaded', 'true'],
+          ['voice_preloaded', 'true'],
+        ]);
 
         setPct(100);
         setPhase('ready');
@@ -214,7 +254,7 @@ export default function ModelDownloadScreen() {
   }, []);
 
   const copy   = PHASE_COPY[phase];
-  const isActive = phase === 'downloading' || phase === 'loading';
+  const isActive = phase === 'downloading' || phase === 'loading' || phase === 'voice-downloading';
   const showProgress = isActive;
 
   return (
@@ -249,7 +289,7 @@ export default function ModelDownloadScreen() {
         </Animated.View>
 
         {/* Progress */}
-        {showProgress && (
+        {showProgress && phase !== 'voice-downloading' && (
           <View style={styles.progressBlock}>
             <ProgressBar pct={pct} />
             <View style={styles.progressLabels}>
@@ -258,6 +298,20 @@ export default function ModelDownloadScreen() {
               </Text>
               <Text style={styles.progressPct}>{pct}%</Text>
             </View>
+          </View>
+        )}
+        {phase === 'voice-downloading' && (
+          <View style={styles.progressBlock}>
+            <View style={styles.voiceRow}>
+              <Text style={styles.progressPhase}>Speech recognition</Text>
+              <Text style={styles.progressPct}>{asrPct}%</Text>
+            </View>
+            <ProgressBar pct={asrPct} />
+            <View style={[styles.voiceRow, { marginTop: Spacing.sm }]}>
+              <Text style={styles.progressPhase}>Voice synthesis</Text>
+              <Text style={styles.progressPct}>{ttsPct}%</Text>
+            </View>
+            <ProgressBar pct={ttsPct} />
           </View>
         )}
 
@@ -367,6 +421,7 @@ const styles = StyleSheet.create({
     borderRadius: 3,
   },
   progressLabels: { flexDirection: 'row', justifyContent: 'space-between' },
+  voiceRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: Spacing.xs },
   progressPhase:  { ...Typography.labelSm, color: Colors.onSurfaceVariant },
   progressPct:    { ...Typography.labelSm, color: Colors.primaryContainer },
 
