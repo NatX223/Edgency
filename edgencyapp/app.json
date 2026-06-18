@@ -76,7 +76,7 @@
       [
         "expo-notifications",
         {
-          "icon": "./assets/images/edgency-icon.png",
+          "icon": "./assets/images/edgency-logo.png",
           "color": "#E6F4FE",
           "defaultChannel": "edgency-checkins"
         }
