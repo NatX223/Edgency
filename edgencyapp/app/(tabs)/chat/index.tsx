@@ -12,6 +12,7 @@ import { ProtocolStepMessage }    from "@/components/agent/ProtocolStepMessage";
 import { VitalsPanelMessage }     from "@/components/agent/VitalsPanelMessage";
 import { InlineTimerMessage }     from "@/components/agent/InlineTimerMessage";
 import { QuickActionTray }        from "@/components/agent/QuickActionTray";
+import { SmsSendCard }            from "@/components/agent/SmsSendCard";
 import type { IncidentType } from "@/components/home/IncidentCard";
 import { Colors, Spacing } from "@/constants/tokens";
 import { useDatabase, type UserRecord } from "@/hooks/useDatabase";
@@ -452,18 +453,24 @@ Return this exact shape:
         setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, text: accumulated } : m));
 
         const allToolsFlat = [locationTool, ...agentToolsRef.current];
+        const pendingSmsQueue: Array<{ address: string; message: string }> = [];
+
         for (const directive of directives) {
           const tool = allToolsFlat.find(t => t.name === directive.tool);
           if (tool?.handler) {
             try {
               console.log(`tool.name: ${tool.name}, tool.description: ${tool.description}`);
               void logActionRef.current({ actionType: 'tool_executed', message: `Tool: ${directive.tool}`, metadata: { toolName: directive.tool, args: directive.args, source: 'directive' } });
-              const result = await tool.handler(directive.args);
-              const note = resolveToolResultNote(directive.tool, result);
-              if (note) {
-                console.log(note);
-                accumulated += `\n${note}`;
-                setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, text: accumulated } : m));
+              const result = await tool.handler(directive.args) as any;
+              if (directive.tool === 'send_emergency_report' && result?.pending) {
+                pendingSmsQueue.push({ address: result.address as string, message: result.message as string });
+              } else {
+                const note = resolveToolResultNote(directive.tool, result);
+                if (note) {
+                  console.log(note);
+                  accumulated += `\n${note}`;
+                  setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, text: accumulated } : m));
+                }
               }
             } catch (e) { console.warn(`[Tool] ${directive.tool} failed:`, e); }
           }
@@ -474,17 +481,26 @@ Return this exact shape:
           if (toolCall.invoke) {
             console.log(`toolCall.id: ${toolCall.id}, toolCall.name: ${toolCall.name}, toolCall.arguments: ${JSON.stringify(toolCall.arguments)}`);
             void logActionRef.current({ actionType: 'tool_executed', message: `Tool: ${toolCall.name}`, metadata: { toolName: toolCall.name, toolId: toolCall.id, args: toolCall.arguments, source: 'structured' } });
-            const result = await toolCall.invoke();
-            const note = resolveToolResultNote(toolCall.name, result);
-            if (note) {
-              console.log(note);
-              accumulated += `\n${note}`;
-              setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, text: accumulated } : m));
+            const result = await toolCall.invoke() as any;
+            if (toolCall.name === 'send_emergency_report' && result?.pending) {
+              pendingSmsQueue.push({ address: result.address as string, message: result.message as string });
+            } else {
+              const note = resolveToolResultNote(toolCall.name, result);
+              if (note) {
+                console.log(note);
+                accumulated += `\n${note}`;
+                setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, text: accumulated } : m));
+              }
             }
           }
         }
 
         scrollToBottom();
+
+        // Append SMS prompt cards after the agent has finished responding
+        for (const sms of pendingSmsQueue) {
+          appendMsg({ id: makeId(), sender: 'ai', type: 'sms_prompt', smsProps: sms });
+        }
 
         const assistantHistoryMsg: ChatMessage = { id: assistantMsgId, role: "assistant", content: accumulated };
         const finalHistory = [...historyRef.current, assistantHistoryMsg];
@@ -750,9 +766,10 @@ Return this exact shape:
 
       const reportTool = tools.find(t => t.name === 'send_emergency_report');
       reportTool?.handler?.({ condition: text, recipient: 'emergency_services' })
-        .then(result => {
-          const note = resolveToolResultNote('send_emergency_report', result);
-          if (note) appendMsg({ id: makeId(), sender: 'ai', text: note });
+        .then((result: any) => {
+          if (result?.pending) {
+            appendMsg({ id: makeId(), sender: 'ai', type: 'sms_prompt', smsProps: { address: result.address, message: result.message } });
+          }
         })
         .catch(() => {});
 
@@ -849,10 +866,18 @@ Return this exact shape:
             onComplete={() => handleTimerComplete(item.id)}
           />
         );
+      case 'sms_prompt':
+        return (
+          <SmsSendCard
+            {...item.smsProps!}
+            sent={item.completed}
+            onSent={() => updateMsg(item.id, { completed: true })}
+          />
+        );
       default:
         return <MessageBubble message={item} animDelay={0} />;
     }
-  }, [handleAgentCardSelect, handleStartProtocol, handleStepDone, handleStepCantDo, handleVitalsConfirm, handleTimerComplete, logAction]);
+  }, [handleAgentCardSelect, handleStartProtocol, handleStepDone, handleStepCantDo, handleVitalsConfirm, handleTimerComplete, logAction, updateMsg]);
 
   const isDelegating = p2pConfig.mode === 'consumer' && !!p2pConfig.providerPublicKey;
 

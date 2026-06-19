@@ -14,7 +14,7 @@ import { parseAIText, segmentsHaveSteps, RichAIContent } from './RichAIContent';
 import type { AgentCardData, TriageAssessmentData, ProtocolStepData, VitalsPanelData, TimerData } from '@/types/agent';
 
 export type MessageSender = 'ai' | 'user';
-export type MessageType = 'text' | 'agent_card' | 'triage_assessment' | 'protocol_step' | 'vitals_panel' | 'inline_timer';
+export type MessageType = 'text' | 'agent_card' | 'triage_assessment' | 'protocol_step' | 'vitals_panel' | 'inline_timer' | 'sms_prompt';
 
 export interface Message {
   id: string;
@@ -35,6 +35,7 @@ export interface Message {
   protocolStepProps?: ProtocolStepData;
   vitalsPanelProps?: VitalsPanelData;
   timerProps?: TimerData;
+  smsProps?: { address: string; message: string };
 
   // State flags
   completed?: boolean;

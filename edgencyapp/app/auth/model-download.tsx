@@ -319,7 +319,7 @@ export default function ModelDownloadScreen() {
         <Animated.View style={[styles.btnWrap, { opacity: btnOpacity, transform: [{ scale: btnScale }] }]}>
           <TouchableOpacity
             style={[styles.continueBtn, phase === 'error' && styles.continueBtnError]}
-            onPress={() => router.replace('/auth/rag-setup')}
+            onPress={() => router.replace('/auth/rag-setup' as any)}
             activeOpacity={0.85}
           >
             <Text style={styles.continueBtnText}>

@@ -6,7 +6,7 @@ On-device emergency response AI — real-time guidance for civilians and first r
 
 ## Demo
 
-> [Demo Video](https://youtu.be/nZbEmAOCUoc)
+> [Demo Video](https://youtu.be/86TxAm9-0_o)
 
 ---
 

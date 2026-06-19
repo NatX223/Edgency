@@ -73,8 +73,8 @@ export function useAgentTools({ getUser, onCheckinScheduled }: AgentToolDeps) {
               ? user.emergency_contact
               : '112';
 
-          await SMS.sendSMSAsync([address], message);
-          return { success: true, sentTo: address };
+          // Return a pending payload — the UI will show a card with a send button
+          return { pending: true, address, message };
         } catch (e: any) {
           return { error: `Could not send report: ${e?.message ?? String(e)}` };
         }

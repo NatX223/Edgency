@@ -22,6 +22,8 @@ export function resolveToolResultNote(toolName: string, result: any): string | n
           ? `📍 ${(result.latitude as number).toFixed(5)}, ${(result.longitude as number).toFixed(5)}`
           : null;
     case 'send_emergency_report':
+      // pending results are handled as sms_prompt cards — no inline text note
+      if (result?.pending) return null;
       return result?.success ? `✓ Emergency report sent to ${result.sentTo}.` : null;
     // schedule_checkin and alert_user are background actions — show nothing in chat
     default:
