@@ -8,6 +8,12 @@ On-device emergency response AI — real-time guidance for civilians and first r
 
 > [Demo Video](https://youtu.be/86TxAm9-0_o)
 
+## Live site
+
+> [Live site](https://edgencyapp.vercel.app/)
+
+> [App download link](https://drive.google.com/file/d/142-YFfEtBJtNGv2hMELRxU5OnX2vZ9lk/view?usp=drive_link)
+
 ---
 
 ## Table of Contents
