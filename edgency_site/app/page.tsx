@@ -1,6 +1,6 @@
 import type { FC } from "react";
 
-const APK_URL = "/app-release.apk";
+const APK_URL = "https://drive.google.com/file/d/142-YFfEtBJtNGv2hMELRxU5OnX2vZ9lk/view?usp=drive_link";
 const DEMO_URL = "https://youtu.be/86TxAm9-0_o";
 const GITHUB_URL = "https://github.com/NatX223/Edgency";
 
@@ -105,7 +105,7 @@ const Nav: FC = () => (
           Edgency
         </span>
       </div>
-      <a href={APK_URL} download style={{
+      <a href={APK_URL} target="_blank" rel="noopener noreferrer" style={{
         display: "inline-flex", alignItems: "center", gap: 6,
         backgroundColor: "#ff7e5f", color: "#3d0700",
         fontWeight: 600, fontSize: 14, padding: "8px 18px",
@@ -168,7 +168,7 @@ const Hero: FC = () => (
       </p>
 
       <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
-        <a href={APK_URL} download style={{
+        <a href={APK_URL} target="_blank" rel="noopener noreferrer" style={{
           display: "inline-flex", alignItems: "center", gap: 8,
           backgroundColor: "#ff7e5f", color: "#3d0700",
           fontWeight: 700, fontSize: 16, padding: "14px 28px",
@@ -389,7 +389,7 @@ const DownloadCTA: FC = () => (
         even with zero signal.
       </p>
       <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
-        <a href={APK_URL} download style={{
+        <a href={APK_URL} target="_blank" rel="noopener noreferrer" style={{
           display: "inline-flex", alignItems: "center", gap: 10,
           backgroundColor: "#ff7e5f", color: "#3d0700",
           fontWeight: 700, fontSize: 16, padding: "16px 32px",
@@ -413,7 +413,7 @@ const DownloadCTA: FC = () => (
         </a>
       </div>
       <p style={{ fontSize: 13, color: "#57423d", marginTop: 24 }}>
-        Android only · Enable &quot;Install unknown apps&quot; in settings to sideload
+        Android only · Enable &quot;Install unknown apps&quot; in settings after downloading
       </p>
     </div>
   </section>
@@ -435,14 +435,13 @@ const Footer: FC = () => (
         {[
           { label: "Demo Video", href: DEMO_URL, external: true },
           { label: "GitHub", href: GITHUB_URL, external: true },
-          { label: "Download APK", href: APK_URL, download: true },
+          { label: "Download APK", href: APK_URL, external: true },
         ].map((l) => (
           <a
             key={l.label}
             href={l.href}
             target={l.external ? "_blank" : undefined}
             rel={l.external ? "noopener noreferrer" : undefined}
-            download={l.download ? true : undefined}
             style={{ fontSize: 13, color: "#9ba1a6", textDecoration: "none" }}
           >
             {l.label}
