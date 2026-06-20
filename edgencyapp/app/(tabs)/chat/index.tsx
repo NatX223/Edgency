@@ -30,11 +30,11 @@ import {
   Alert,
   FlatList,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   SafeAreaView,
   StatusBar,
   StyleSheet,
-  Switch,
   Text,
   TouchableOpacity,
   View,
@@ -93,6 +93,7 @@ export default function ChatScreen() {
   const { config: p2pConfig, setMode: setP2PMode, setProviderKey: setP2PKey } = useP2PConfig();
   const p2pProvider = useP2PProvider();
   const [p2pSheetVisible, setP2PSheetVisible] = useState(false);
+  const [menuVisible, setMenuVisible] = useState(false);
 
   const [userRecord, setUserRecord] = useState<UserRecord | null>(null);
   const userRecordRef = useRef<UserRecord | null>(null);
@@ -889,7 +890,7 @@ Return this exact shape:
     return undefined;
   }, [modelStatus, downloadPct, ragReady, ragStatus, isDelegating]);
 
-  const p2pBadge = useMemo(() => {
+  const menuBadge = useMemo(() => {
     if (p2pConfig.mode === 'consumer' && modelStatus === 'ready') return 'PEER';
     if (p2pConfig.mode === 'provider' && p2pProvider.isProviding) return 'HOST';
     return undefined;
@@ -934,6 +935,56 @@ Return this exact shape:
         onStopProvider={p2pProvider.stop}
       />
 
+      <Modal
+        transparent
+        visible={menuVisible}
+        animationType="fade"
+        onRequestClose={() => setMenuVisible(false)}
+      >
+        <TouchableOpacity style={styles.menuOverlay} activeOpacity={1} onPress={() => setMenuVisible(false)}>
+          <View style={styles.menuCard}>
+            {incidentType !== 'medical' && (
+              <>
+                <Text style={styles.menuSectionLabel}>Model Type</Text>
+                <TouchableOpacity
+                  style={[styles.menuOption, !speedMode && styles.menuOptionSelected]}
+                  activeOpacity={0.7}
+                  onPress={() => setSpeedMode(false)}
+                >
+                  <View style={[styles.menuRadio, !speedMode && styles.menuRadioSelected]} />
+                  <View style={styles.menuOptionText}>
+                    <Text style={styles.menuOptionTitle}>Accuracy</Text>
+                    <Text style={styles.menuOptionDesc}>More detailed answers and multimodal capabilities</Text>
+                  </View>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.menuOption, speedMode && styles.menuOptionSelected]}
+                  activeOpacity={0.7}
+                  onPress={() => setSpeedMode(true)}
+                >
+                  <View style={[styles.menuRadio, speedMode && styles.menuRadioSelected]} />
+                  <View style={styles.menuOptionText}>
+                    <Text style={styles.menuOptionTitle}>Speed</Text>
+                    <Text style={styles.menuOptionDesc}>Faster answers but no multimodal capability</Text>
+                  </View>
+                </TouchableOpacity>
+                <View style={styles.menuDivider} />
+              </>
+            )}
+            <TouchableOpacity
+              style={styles.menuOption}
+              activeOpacity={0.7}
+              onPress={() => { setMenuVisible(false); setP2PSheetVisible(true); }}
+            >
+              <View style={styles.menuOptionText}>
+                <Text style={styles.menuOptionTitle}>P2P{menuBadge ? `  ·  ${menuBadge}` : ''}</Text>
+                <Text style={styles.menuOptionDesc}>Configure peer-to-peer AI provider</Text>
+              </View>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
       <SafeAreaView style={styles.safe}>
         <AgentStatusBar
           agentState={agentState.agentState}
@@ -941,8 +992,8 @@ Return this exact shape:
           currentStep={agentState.currentStep}
           totalSteps={agentState.totalSteps}
           onBack={() => router.back()}
-          p2pBadge={p2pBadge}
-          onP2PPress={() => setP2PSheetVisible(true)}
+          menuBadge={menuBadge}
+          onMenuPress={() => setMenuVisible(true)}
         />
 
         <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === "ios" ? "padding" : "height"} keyboardVerticalOffset={0}>
@@ -965,25 +1016,6 @@ Return this exact shape:
               emergencyContact={userRecord?.emergency_contact as string | undefined}
               onFindAED={handleFindAED}
             />
-          )}
-
-          {incidentType !== 'medical' && (
-            <View style={styles.speedToggleRow}>
-              <TouchableOpacity onPress={() => setSpeedMode(false)} activeOpacity={0.7}>
-                <Text style={[styles.speedToggleLabel, !speedMode && styles.speedToggleLabelActive]}>Accuracy</Text>
-              </TouchableOpacity>
-              <Switch
-                value={speedMode}
-                onValueChange={setSpeedMode}
-                disabled={modelStatus === 'downloading' || modelStatus === 'loading'}
-                trackColor={{ false: Colors.surfaceContainerHigh, true: Colors.primaryContainer }}
-                thumbColor={speedMode ? Colors.onPrimary : Colors.onSurface}
-                ios_backgroundColor={Colors.surfaceContainerHigh}
-              />
-              <TouchableOpacity onPress={() => setSpeedMode(true)} activeOpacity={0.7}>
-                <Text style={[styles.speedToggleLabel, speedMode && styles.speedToggleLabelActive]}>Speed</Text>
-              </TouchableOpacity>
-            </View>
           )}
 
           <ChatInputBar
@@ -1010,22 +1042,71 @@ const styles = StyleSheet.create({
   listHeader:  { gap: Spacing.md, paddingTop: Spacing.md, paddingBottom: Spacing.lg },
   typingWrap:  { paddingTop: Spacing.sm },
 
-  speedToggleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: Spacing.sm,
-    paddingVertical: Spacing.xs,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255,255,255,0.06)',
+  menuOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
   },
-  speedToggleLabel: {
-    fontSize: 12,
-    fontFamily: 'Inter_500Medium',
+  menuCard: {
+    position: 'absolute',
+    top: 100,
+    right: Spacing.md,
+    backgroundColor: Colors.surfaceContainer,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    minWidth: 240,
+    overflow: 'hidden',
+  },
+  menuSectionLabel: {
+    fontSize: 10,
+    fontFamily: 'Inter_600SemiBold',
     color: Colors.onSurfaceVariant,
-    letterSpacing: 0.5,
+    letterSpacing: 1.2,
+    paddingHorizontal: Spacing.md,
+    paddingTop: Spacing.sm,
+    paddingBottom: 4,
   },
-  speedToggleLabelActive: {
+  menuOption: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 10,
+  },
+  menuOptionSelected: {
+    backgroundColor: 'rgba(255,255,255,0.05)',
+  },
+  menuRadio: {
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    borderWidth: 2,
+    borderColor: Colors.onSurfaceVariant,
+    marginTop: 2,
+    flexShrink: 0,
+  },
+  menuRadioSelected: {
+    borderColor: Colors.primary,
+    backgroundColor: Colors.primary,
+  },
+  menuOptionText: {
+    flex: 1,
+    gap: 2,
+  },
+  menuOptionTitle: {
+    fontSize: 14,
+    fontFamily: 'Inter_500Medium',
     color: Colors.onSurface,
+  },
+  menuOptionDesc: {
+    fontSize: 11,
+    fontFamily: 'Inter_400Regular',
+    color: Colors.onSurfaceVariant,
+    lineHeight: 15,
+  },
+  menuDivider: {
+    height: 1,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    marginVertical: 4,
   },
 });

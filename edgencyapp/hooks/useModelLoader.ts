@@ -50,6 +50,7 @@ export function useModelLoader({ incidentType, speedMode, p2pConfig, logActionRe
 
     (async () => {
       try {
+        console.log(`[Model] Loading: ${modelDisplayName} (mode=${isDelegating ? 'p2p' : 'local'})`);
         void logActionRef.current({ actionType: 'model_load_start', message: `Loading ${modelDisplayName}`, metadata: { modelName: modelDisplayName, incidentType, device: 'gpu', mode: isDelegating ? 'p2p' : 'local' } });
         setModelStatus("idle");
         setModelId(null);
@@ -104,12 +105,13 @@ export function useModelLoader({ incidentType, speedMode, p2pConfig, logActionRe
         setModelId(id);
         setModelStatus("ready");
         setDownloadPct(null);
+        console.log(`[Model] Loaded: ${modelDisplayName} (id=${id})`);
         void logActionRef.current({ actionType: 'model_load_complete', message: `Model ready: ${modelDisplayName}`, metadata: { modelId: id, modelName: modelDisplayName, device: 'gpu', mode: isDelegating ? 'p2p' : 'local', incidentType } });
       } catch (e: any) {
         if (!cancelled) {
           setModelStatus("error");
+          console.error(`[Model] Load failed: ${modelDisplayName} — ${e?.message ?? String(e)}`);
           void logActionRef.current({ actionType: 'model_load_error', message: `Model load failed: ${e?.message ?? String(e)}`, metadata: { modelName: modelDisplayName, incidentType } });
-          console.error("[QVAC] Init failed:", e?.message ?? String(e));
         }
       }
     })();
@@ -118,7 +120,10 @@ export function useModelLoader({ incidentType, speedMode, p2pConfig, logActionRe
       cancelled = true;
       const id = modelIdRef.current;
       modelIdRef.current = null;
-      if (id) void unloadModel({ modelId: id, clearStorage: false }).catch(() => {});
+      if (id) {
+        console.log(`[Model] Unloading: ${modelDisplayName} (id=${id})`);
+        void unloadModel({ modelId: id, clearStorage: false }).catch(() => {});
+      }
     };
   }, [incidentType, speedMode, p2pConfig.isLoaded, p2pConfig.mode, p2pConfig.providerPublicKey]);
 

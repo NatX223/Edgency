@@ -9,8 +9,8 @@ interface AgentStatusBarProps {
   currentStep?: number;
   totalSteps?: number;
   onBack: () => void;
-  p2pBadge?: string;
-  onP2PPress?: () => void;
+  menuBadge?: string;
+  onMenuPress?: () => void;
 }
 
 function dotColor(state: AgentState): string {
@@ -34,8 +34,8 @@ export function AgentStatusBar({
   currentStep = 0,
   totalSteps = 0,
   onBack,
-  p2pBadge,
-  onP2PPress,
+  menuBadge,
+  onMenuPress,
 }: AgentStatusBarProps) {
   const dotOpacity = useRef(new Animated.Value(1)).current;
   const progressAnim = useRef(new Animated.Value(0)).current;
@@ -92,20 +92,19 @@ export function AgentStatusBar({
         )}
       </View>
 
-      {onP2PPress && (
+      {onMenuPress && (
         <TouchableOpacity
-          style={styles.p2pBtn}
-          onPress={onP2PPress}
+          style={styles.menuBtn}
+          onPress={onMenuPress}
           activeOpacity={0.7}
           hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
         >
-          {p2pBadge ? (
-            <View style={styles.p2pBadge}>
-              <Text style={styles.p2pBadgeText}>{p2pBadge}</Text>
+          {menuBadge && (
+            <View style={styles.menuBadge}>
+              <Text style={styles.menuBadgeText}>{menuBadge}</Text>
             </View>
-          ) : (
-            <Text style={styles.p2pIcon}>P2P</Text>
           )}
+          <Text style={styles.menuDots}>⋮</Text>
         </TouchableOpacity>
       )}
     </View>
@@ -136,8 +135,8 @@ const styles = StyleSheet.create({
   progressTrack: { height: 3, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: Radii.full, overflow: 'hidden' },
   progressFill:  { height: '100%', backgroundColor: Colors.primaryContainer, borderRadius: Radii.full },
 
-  p2pBtn:       { padding: 6, borderRadius: Radii.sm },
-  p2pBadge:     { backgroundColor: Colors.tertiaryContainer, paddingHorizontal: 7, paddingVertical: 3, borderRadius: Radii.full },
-  p2pBadgeText: { ...Typography.labelSm, color: Colors.onTertiaryContainer, fontSize: 10 },
-  p2pIcon:      { ...Typography.labelSm, color: Colors.onSurfaceVariant, fontSize: 10 },
+  menuBtn:      { padding: 8, borderRadius: Radii.sm, alignItems: 'center', justifyContent: 'center' },
+  menuDots:     { fontSize: 20, color: Colors.onSurfaceVariant, lineHeight: 22 },
+  menuBadge:    { position: 'absolute', top: 2, right: 2, backgroundColor: Colors.tertiaryContainer, paddingHorizontal: 4, paddingVertical: 1, borderRadius: Radii.full, zIndex: 1 },
+  menuBadgeText: { ...Typography.labelSm, color: Colors.onTertiaryContainer, fontSize: 8 },
 });

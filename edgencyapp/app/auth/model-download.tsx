@@ -194,7 +194,7 @@ export default function ModelDownloadScreen() {
         fadeInContent();
 
         await loadModel({
-          modelSrc:    LLAMA_TOOL_CALLING_1B_INST_Q4_K,
+          modelSrc:    GEMMA4_2B_MULTIMODAL_Q4_K_M,
           modelType:   'llm',
           modelConfig: {
             device:    'gpu',
